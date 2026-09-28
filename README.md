@@ -1,39 +1,29 @@
 # TORQUE OVERDRIVE
 
-2D dirt-bike trials. Sequential-impulse rigid-body solver at 240 Hz: chassis plus two wheels on spring-damper fork / swingarm (`F = -k x - c v`), friction-limited tyres, real wheel torque, articulated rider skeleton (head, torso, upper/lower arms, legs with IK), 11-node verlet ragdoll, collapsing bridge on revolute hinges, catapult pads, loop, gaps, checkpoints.
+Endless, procedurally generated, Hill-Climb-Racing-style arcade physics game. Pure HTML5 Canvas, no dependencies, no build step. Runs in any modern browser (desktop, laptop, tablet, iPhone, Android).
 
-Works on desktop, laptop, tablet, iPhone and Android. A touch overlay (Throttle, Brake, Lean L/R, Overtorque, Preload, Retry) appears on coarse-pointer devices. Physics is fixed-step and deterministic, so it plays identically on every device; rendering is interpolated. Particles are object-pooled (160).
+**Deploy (GitHub Pages):** keep `index.html`, `sim.js`, and `game.js` at the site root and enable Pages from `main`. Optional `?seed=123` replays a specific track.
 
-## Physics
+## Features
 
-- **Slope roll**: when throttle is released, gravity wins if `sin(theta) > mu_static * cos(theta)`. Tangential accel is `a = g sin(theta) - mu g cos(theta)`. The bike rolls / slides down steep grades instead of locking.
-- **Wheel spin**: `omega = v_tangential / wheel_radius`. Spokes spin clockwise going forward and counter-clockwise in reverse.
-- **Overtorque (Shift / OT)**: meter charges to 100% (`Math.min(charge, 100)`). Engaged: 2.0x rear-wheel torque, raised RPM limit, fiery exhaust behind the rear wheel, screen shake, wider camera.
-- **Rider**: multi-segment skeleton. Knees and elbows tuck under heavy drops, lean back on throttle / wheelies, tuck forward on downhills.
-- **Hazards**: collapsing planks snap on revolute joints under load; catapult plates fire a vertical impulse; violent impacts spawn a ragdoll.
+- **Procedural tracks** (seeded Perlin, 3 stacked octaves, new seed every run) in 5 biomes: Countryside, Desert, Arctic Ice (low friction), Moon (0.38 g, craters), Swamp Mud (high drag). Visual surface is Catmull-Rom interpolated; physics stays on the linear polyline for determinism.
+- **Solvability guarantee:** `max_slope = atan(min(0.5*mu, T/(m g r)))` so every hill is climbable by the stock bike; slope change per sample is rate-limited (min curvature radius ~500 px, no wedging valleys), and `TOSim.validate()` checks it. Fuel cans are placed every 1500-2100 px on the road.
+- **Fuel** (drains faster on throttle/nitro), **coins** on crest arcs and climbs, flip / 500 m bonuses.
+- **Nitro (Shift / NITRO only):** 2.0x rear-wheel torque, raised RPM ceiling, fire particles, wider camera FOV, screen shake. Meter charges with a smooth catch-up curve.
+- **Preload / bunny hop (Space / HOP only):** hold compresses both springs; release fires an upward impulse. Shift and Space are never shared.
+- **Garage** (menu / pause / game over): 4 upgrades x 8 levels (Engine, Suspension, Tyre Grip, Fuel Tank). Selecting Classic Stunt Bike, 4x4 Hill Climber, or High-Speed Quad re-instantiates the rigid body from that profile (mass, wheelbase, wheel radius, spring stiffness, torque, drive layout) on the next run. Progress saved in `localStorage`.
+- **Physics:** 240 Hz fixed step, spring-damper suspension, impulse tyre contact, `omega = v/r` rolling (clockwise forward, counter-clockwise reverse). Tangential gravity `g*sin(theta)` beats static friction so the bike rolls back down hills when throttle is released.
+- **Rider:** IK-articulated limbs that flex on throttle, brake, wheelie, stoppie, and heavy landings. Dual coil springs compress with travel. Head or inverted-roof impact severs the rider into a 6-node verlet ragdoll.
+- **Camera & juice:** speed-based FOV (zoom-out), landing / nitro screen shake (honours `prefers-reduced-motion`), pooled exhaust / dust / fire particles (320).
+- **Controls (desktop):** W/Up gas, S/Down brake+reverse, A/D or Left/Right tilt, **Shift nitro**, **Space hop**, Esc/P pause, R restart, Enter to start.
+- **Controls (touch):** auto-shown overlay on phones, tablets, and coarse pointers — Lean L/R, Nitro, Hop, Brake, Gas. Multi-touch pointer events; 44 px+ targets; safe-area insets for notched iPhones. Keyboard still works on hybrid devices.
+- **Performance:** allocation-free hot loop, DPR capped at 2, adaptive resolution if frames exceed budget, auto-pause when the tab is hidden, iOS AudioContext unlock on first gesture.
 
-## Controls
+## Tests
 
-| Input          | Action                                          |
-| -------------- | ----------------------------------------------- |
-| W / Up / GAS   | Throttle                                        |
-| S / Down / BRK | Brake (hold at standstill to reverse)           |
-| A / D / LEAN   | Pitch the bike / shift weight                   |
-| Space / HOP    | Preload (hold) then release to hop              |
-| Shift / OT     | Overtorque: 2x engine torque + higher rev limit |
-| R / RTRY       | Retry from last checkpoint                      |
-| Esc            | Pause                                           |
-
-Gamepad: RT throttle, LT brake, stick lean, A hop, B overtorque, Start retry.
-
-## Always-winnable
-
-The course is deterministic (no random obstacles). `node tests/verify.js` checks slope roll, wheel omega binding, overtorque cap, suspension compression, catapults, bridge, ragdoll, and rider skeleton.
-
-## Run
-
-Keep `index.html` and `game.js` in the same folder. Open `index.html` or serve the folder:
-
-```bash
-python3 -m http.server 8000
 ```
+node tests/verify.js
+node tests/moon_bot.js
+```
+
+`verify.js` covers terrain validity, wheel omega, hill roll-back, nitro, fuel, and ragdoll. `moon_bot.js` is a headless low-g drive check.

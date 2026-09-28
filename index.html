@@ -4,29 +4,32 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width,initial-scale=1,viewport-fit=cover"
+      content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"
     />
-    <meta name="theme-color" content="#0F172A" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="dark" />
     <meta
       name="description"
-      content="TORQUE OVERDRIVE — 2D dirt-bike trials with rigid-body physics. Play free in the browser on desktop, tablet, and phone."
+      content="TORQUE OVERDRIVE - endless procedural hill-climb racing. Play free on any device."
     />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Torque Overdrive" />
     <meta
       name="apple-mobile-web-app-status-bar-style"
       content="black-translucent"
     />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <title>TORQUE OVERDRIVE</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@700;900&display=swap"
-      rel="stylesheet"
-      crossorigin="anonymous"
+    <meta name="format-detection" content="telephone=no" />
+    <meta property="og:title" content="TORQUE OVERDRIVE" />
+    <meta
+      property="og:description"
+      content="Endless procedural hill-climb racing. Play free in the browser."
     />
+    <meta property="og:type" content="website" />
+    <title>TORQUE OVERDRIVE</title>
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect fill='%230F172A' width='64' height='64'/%3E%3Ccircle cx='20' cy='44' r='10' fill='none' stroke='%23DC2626' stroke-width='4'/%3E%3Ccircle cx='46' cy='44' r='10' fill='none' stroke='%2338BDF8' stroke-width='4'/%3E%3Cpath d='M16 40 L30 22 L48 28' fill='none' stroke='%23F8FAFC' stroke-width='3'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect fill='%230F172A' width='64' height='64'/%3E%3Ccircle cx='20' cy='44' r='10' fill='none' stroke='%23DC2626' stroke-width='4'/%3E%3Ccircle cx='46' cy='44' r='10' fill='none' stroke='%2338BDF8' stroke-width='4'/%3E%3C/svg%3E"
     />
     <style>
       :root {
@@ -36,35 +39,44 @@
         --s: #38bdf8;
         --a: #22c55e;
         --m: #94a3b8;
+        --f: "Arial Black", Impact, system-ui, sans-serif;
+        --mono: ui-monospace, Menlo, Consolas, monospace;
       }
       * {
         margin: 0;
         padding: 0;
         box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
       }
       html,
       body {
         width: 100%;
         height: 100%;
+        height: 100vh;
         height: 100dvh;
+        height: -webkit-fill-available;
         background: var(--bg);
         overflow: hidden;
         touch-action: none;
         user-select: none;
         -webkit-user-select: none;
         -webkit-touch-callout: none;
+        overscroll-behavior: none;
+        position: fixed;
+        inset: 0;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
       canvas {
         display: block;
         width: 100%;
         height: 100%;
-        background: var(--bg);
       }
       #ui {
         position: fixed;
         inset: 0;
         pointer-events: none;
-        font-family: Orbitron, sans-serif;
+        font-family: var(--f);
         color: var(--fg);
       }
       #top {
@@ -73,152 +85,237 @@
         left: 0;
         right: 0;
         display: flex;
-        justify-content: space-between;
-        padding: calc(12px + env(safe-area-inset-top)) 16px 0;
-        gap: 12px;
+        gap: 8px;
+        padding: calc(8px + env(safe-area-inset-top))
+          calc(10px + env(safe-area-inset-right)) 0
+          calc(10px + env(safe-area-inset-left));
       }
       .panel {
         background: rgba(15, 23, 42, 0.72);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        padding: 8px 12px;
-        min-width: 72px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 5px 10px;
+        min-width: 64px;
+        border-radius: 6px;
       }
       .lbl {
-        font-family: "JetBrains Mono", monospace;
-        font-size: 10px;
-        letter-spacing: 0.16em;
+        font: 10px var(--mono);
+        letter-spacing: 0.14em;
         color: var(--m);
         text-transform: uppercase;
       }
       .val {
-        font-size: 18px;
-        font-weight: 900;
-        letter-spacing: 0.04em;
+        font-size: clamp(14px, 3.2vw, 20px);
         line-height: 1.2;
+        letter-spacing: 0.03em;
       }
-      .val.red {
-        color: var(--p);
-      }
-      .val.cyan {
-        color: var(--s);
-      }
-      .val.green {
-        color: var(--a);
+      .sp {
+        flex: 1;
       }
       #bars {
         position: absolute;
-        top: calc(64px + env(safe-area-inset-top));
-        left: 16px;
-        width: 160px;
+        top: calc(58px + env(safe-area-inset-top));
+        left: calc(10px + env(safe-area-inset-left));
+        width: min(170px, 40vw);
       }
       .bar {
-        height: 6px;
+        height: 9px;
         background: #1e293b;
-        margin-top: 6px;
+        margin: 3px 0 7px;
+        border-radius: 5px;
         overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
       }
-      .bar > i {
+      .bar i {
         display: block;
         height: 100%;
         width: 0;
-        background: var(--s);
-      }
-      .bar.ot > i {
-        background: var(--p);
-      }
-      .bar.hop > i {
-        background: #f59e0b;
-      }
-      .bar.ot.ready > i {
         background: var(--a);
       }
-      #otl.ready {
+      #bn i {
+        background: #f59e0b;
+      }
+      #bn.hot i {
+        background: #fbbf24;
+        box-shadow: 0 0 10px rgba(251, 191, 36, 0.7);
+      }
+      #bf.low i {
+        background: var(--p);
+      }
+      #pb,
+      #mb {
+        pointer-events: auto;
+        cursor: pointer;
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #fff;
+        font: 16px var(--f);
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #pb:focus-visible,
+      #mb:focus-visible,
+      .btn:focus-visible,
+      #touch button:focus-visible {
+        outline: 2px solid var(--s);
+        outline-offset: 2px;
+      }
+      #toast {
+        position: absolute;
+        top: 24%;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: clamp(16px, 4vw, 28px);
+        letter-spacing: 0.25em;
         color: var(--a);
+        opacity: 0;
+        transition: opacity 0.3s;
+        text-shadow: 0 0 14px rgba(34, 197, 94, 0.6);
       }
       #msg {
         position: absolute;
         inset: 0;
-        display: flex;
-        flex-direction: column;
+        display: none;
         align-items: center;
         justify-content: center;
         text-align: center;
         pointer-events: auto;
-        background: rgba(15, 23, 42, 0.82);
-        padding: 24px;
+        background: rgba(15, 23, 42, 0.96);
+        padding: calc(12px + env(safe-area-inset-top, 0px))
+          calc(12px + env(safe-area-inset-right, 0px))
+          calc(12px + env(safe-area-inset-bottom, 0px))
+          calc(12px + env(safe-area-inset-left, 0px));
+        overflow: auto;
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
+        z-index: 10;
       }
-      #msg h1 {
-        font-size: clamp(28px, 6vw, 56px);
-        font-weight: 900;
-        letter-spacing: 0.12em;
+      #msg.on {
+        display: flex;
+      }
+      .box {
+        max-width: 720px;
+        width: 100%;
+        max-height: 100%;
+        margin: auto;
+      }
+      h1 {
+        font-size: clamp(24px, 6vw, 52px);
+        letter-spacing: 0.1em;
         color: var(--p);
         text-shadow: 0 0 24px rgba(220, 38, 38, 0.45);
       }
-      #msg p {
-        font-family: "JetBrains Mono", monospace;
-        font-size: 13px;
+      h2 {
+        font-size: clamp(18px, 4vw, 30px);
+        letter-spacing: 0.1em;
+        color: var(--s);
+      }
+      .t {
+        font: 12px/1.6 var(--mono);
         color: var(--m);
-        margin: 14px 0 22px;
-        max-width: 520px;
-        line-height: 1.6;
+        margin: 10px 0;
       }
-      #msg b {
-        color: var(--fg);
-        font-weight: 500;
+      .t b {
+        color: #fff;
+        font-weight: 600;
       }
-      #go {
+      .btn {
         pointer-events: auto;
         cursor: pointer;
         border: 0;
         background: var(--p);
         color: #fff;
-        font-family: Orbitron, sans-serif;
-        font-weight: 900;
-        letter-spacing: 0.14em;
-        padding: 14px 28px;
-        font-size: 14px;
-        min-height: 48px;
-        transition:
-          transform 0.15s,
-          filter 0.15s;
+        font: 14px var(--f);
+        letter-spacing: 0.12em;
+        padding: 12px 22px;
+        min-height: 46px;
+        margin: 4px;
+        border-radius: 6px;
+        -webkit-appearance: none;
+        appearance: none;
       }
-      #go2 {
-        pointer-events: auto;
-        cursor: pointer;
-        border: 1px solid rgba(255, 255, 255, 0.25);
+      .btn.g {
         background: transparent;
-        color: #fff;
-        font-family: Orbitron, sans-serif;
-        font-weight: 900;
-        letter-spacing: 0.14em;
-        padding: 14px 22px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+      }
+      .btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .btn.sm {
+        padding: 8px 12px;
+        min-height: 44px;
         font-size: 12px;
-        min-height: 48px;
-        margin-left: 10px;
       }
-      #toast {
-        position: absolute;
-        top: 22%;
-        left: 0;
-        right: 0;
-        text-align: center;
-        font-family: Orbitron, sans-serif;
-        font-weight: 900;
-        letter-spacing: 0.3em;
-        color: var(--a);
-        opacity: 0;
-        transition: opacity 0.35s;
-        text-shadow: 0 0 16px rgba(34, 197, 94, 0.5);
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 6px 0;
+        text-align: left;
       }
-      #go:hover,
-      #go:focus {
-        filter: brightness(1.1);
-        transform: scale(1.03);
-        outline: 2px solid var(--s);
-        outline-offset: 3px;
+      .row .n {
+        flex: 1;
+        font-size: 13px;
       }
-      #go:active {
-        transform: scale(0.97);
+      .row .n small {
+        display: block;
+        font: 11px var(--mono);
+        color: var(--m);
+      }
+      .pips {
+        display: flex;
+        gap: 3px;
+        margin-top: 4px;
+      }
+      .pips i {
+        width: 12px;
+        height: 6px;
+        background: #334155;
+        border-radius: 2px;
+      }
+      .pips i.on {
+        background: var(--a);
+      }
+      .veh {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      .veh .c {
+        flex: 1;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        padding: 8px;
+        font-size: 14px;
+      }
+      .st {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+        font: 11px var(--mono);
+        color: var(--m);
+        margin-top: 6px;
+        text-align: left;
+      }
+      .st u {
+        display: block;
+        height: 6px;
+        background: var(--s);
+        border-radius: 3px;
+        margin-top: 3px;
+        text-decoration: none;
       }
       #touch {
         position: absolute;
@@ -226,183 +323,240 @@
         right: 0;
         bottom: 0;
         display: none;
-        padding: 0 10px calc(12px + env(safe-area-inset-bottom));
         justify-content: space-between;
+        align-items: flex-end;
+        gap: 8px;
+        padding: 0 calc(10px + env(safe-area-inset-right, 0px))
+          calc(10px + env(safe-area-inset-bottom, 0px))
+          calc(10px + env(safe-area-inset-left, 0px));
         pointer-events: none;
-        gap: 10px;
         z-index: 5;
+      }
+      body.touch.playing #touch {
+        display: flex;
       }
       #touch .col {
         display: flex;
-        gap: 10px;
+        gap: 8px;
         align-items: flex-end;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
       }
       #touch button {
         pointer-events: auto;
-        cursor: pointer;
-        min-width: 56px;
-        min-height: 56px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        background: rgba(15, 23, 42, 0.78);
+        touch-action: none;
+        min-width: 48px;
+        min-height: 48px;
+        padding: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(15, 23, 42, 0.62);
         color: #fff;
-        font-family: Orbitron, sans-serif;
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        -webkit-tap-highlight-color: transparent;
-        touch-action: manipulation;
-        border-radius: 8px;
+        font: 10px var(--f);
+        letter-spacing: 0.06em;
+        border-radius: 12px;
+        -webkit-user-select: none;
+        user-select: none;
       }
       #touch button.on {
-        background: rgba(220, 38, 38, 0.55);
+        background: rgba(220, 38, 38, 0.62);
         border-color: var(--p);
+        transform: scale(0.96);
       }
       #touch .thr {
         min-width: 76px;
         min-height: 76px;
-        background: rgba(34, 197, 94, 0.28);
+        background: rgba(34, 197, 94, 0.32);
+        font-size: 12px;
       }
-      #touch .ot {
-        background: rgba(220, 38, 38, 0.22);
+      #touch .nit {
+        background: rgba(245, 158, 11, 0.32);
       }
-      body.touch #touch {
-        display: flex;
+      #touch .hop {
+        background: rgba(56, 189, 248, 0.28);
       }
-      body.touch #hint {
+      body.touch .kb {
         display: none;
       }
-      body.touch #bars {
-        width: 120px;
-        opacity: 0.85;
+      @media (min-width: 500px) {
+        #touch button {
+          min-width: 58px;
+          min-height: 58px;
+          font-size: 11px;
+        }
+        #touch .thr {
+          min-width: 88px;
+          min-height: 88px;
+        }
+        #touch .col {
+          gap: 10px;
+        }
       }
-      @media (max-width: 700px) {
-        .val {
-          font-size: 13px;
+      @media (min-width: 900px) and (pointer: coarse) {
+        #touch button {
+          min-width: 64px;
+          min-height: 64px;
         }
-        .panel {
-          padding: 6px 8px;
-          min-width: 52px;
+        #touch .thr {
+          min-width: 104px;
+          min-height: 104px;
         }
-        #top {
-          gap: 6px;
-          padding-left: 8px;
-          padding-right: 8px;
-          flex-wrap: wrap;
-        }
+      }
+      @media (max-height: 480px) {
         #bars {
-          top: calc(96px + env(safe-area-inset-top));
+          top: calc(52px + env(safe-area-inset-top, 0px));
+          width: 120px;
+        }
+        h1 {
+          font-size: 22px;
+        }
+        .t {
+          margin: 4px 0;
+        }
+        #touch {
+          padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
         }
         #touch button {
-          min-width: 48px;
-          min-height: 48px;
-          font-size: 10px;
+          min-height: 44px;
+          min-width: 44px;
+          font-size: 9px;
         }
-        #msg p {
-          font-size: 12px;
+        #touch .thr {
+          min-height: 58px;
+          min-width: 64px;
+        }
+        .btn {
+          padding: 8px 16px;
+          min-height: 38px;
+        }
+      }
+      @media (max-width: 360px) {
+        #touch button {
+          min-width: 42px;
+          min-height: 44px;
+          padding: 4px;
+          font-size: 9px;
+        }
+        #touch .thr {
+          min-width: 58px;
+          min-height: 58px;
+        }
+        .panel {
+          padding: 4px 6px;
+        }
+        #touch .col {
+          gap: 5px;
+        }
+      }
+      @media (max-width: 600px) {
+        .panel {
+          min-width: 0;
+          padding: 4px 7px;
+        }
+        #top {
+          gap: 5px;
         }
       }
       @media (orientation: landscape) and (max-height: 500px) {
         #top {
-          padding-top: calc(6px + env(safe-area-inset-top));
+          padding-top: calc(4px + env(safe-area-inset-top, 0px));
         }
         #bars {
-          display: none;
-        }
-        #touch button {
-          min-height: 48px;
-          min-width: 48px;
-        }
-        #msg h1 {
-          font-size: 22px;
-        }
-        #touch {
-          padding-bottom: calc(6px + env(safe-area-inset-bottom));
+          top: calc(44px + env(safe-area-inset-top, 0px));
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        #go {
-          transition: none;
-        }
         #toast {
           transition: none;
         }
-        canvas {
-          image-rendering: auto;
+        #touch button.on {
+          transform: none;
         }
       }
     </style>
   </head>
   <body>
     <noscript>TORQUE OVERDRIVE needs JavaScript enabled.</noscript>
-    <canvas id="c"></canvas>
+    <canvas id="c" role="img" aria-label="Torque Overdrive game view"></canvas>
     <div id="ui">
       <div id="top">
         <div class="panel">
-          <div class="lbl">Speed</div>
-          <div class="val cyan" id="spd">0</div>
-        </div>
-        <div class="panel">
           <div class="lbl">Dist</div>
-          <div class="val" id="dst">0</div>
+          <div class="val" id="dst">0m</div>
         </div>
         <div class="panel">
-          <div class="lbl">Time</div>
-          <div class="val" id="tim">0.00</div>
+          <div class="lbl">Coins</div>
+          <div class="val" id="cn" style="color: #fbbf24">0</div>
         </div>
         <div class="panel">
-          <div class="lbl">Best</div>
-          <div class="val green" id="bst">--</div>
+          <div class="lbl">Speed</div>
+          <div class="val" id="spd" style="color: var(--s)">0</div>
         </div>
+        <div class="sp"></div>
+        <button
+          id="mb"
+          type="button"
+          aria-label="Toggle sound"
+          aria-pressed="true"
+          title="Sound"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <path d="M11 5L6 9H3v6h3l5 4V5z" />
+            <path d="M15.5 8.5a5 5 0 010 7" />
+            <path d="M19 5a9 9 0 010 14" />
+          </svg>
+        </button>
+        <button id="pb" type="button" aria-label="Pause" title="Pause">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <rect x="6" y="4" width="4" height="16" />
+            <rect x="14" y="4" width="4" height="16" />
+          </svg>
+        </button>
       </div>
       <div id="bars">
-        <div class="lbl">Throttle</div>
-        <div class="bar"><i id="bthr"></i></div>
-        <div class="lbl" id="otl">Overtorque</div>
-        <div class="bar ot"><i id="bot"></i></div>
-        <div class="lbl">Preload</div>
-        <div class="bar hop"><i id="bhop"></i></div>
+        <div class="lbl">Fuel</div>
+        <div class="bar" id="bf"><i></i></div>
+        <div class="lbl">Nitro</div>
+        <div class="bar" id="bn"><i></i></div>
       </div>
-      <div id="msg">
-        <h1>TORQUE OVERDRIVE</h1>
-        <p id="hint">
-          <b>W/S</b> throttle/brake &nbsp; <b>A/D</b> lean &nbsp;
-          <b>SPACE</b> preload/hop &nbsp; <b>SHIFT</b> overtorque &nbsp;
-          <b>R</b> retry
-        </p>
-        <p>Compress. Release. Commit. Physics is the judge.</p>
-        <div class="btns">
-          <button id="go" type="button">ENGAGE</button
-          ><button id="go2" type="button" style="display: none">RESTART</button>
-        </div>
-      </div>
-      <div id="toast"></div>
+      <div id="toast" role="status" aria-live="polite"></div>
       <div id="touch" aria-hidden="true">
         <div class="col">
-          <button type="button" data-k="leanL" aria-label="Lean left">
-            LEAN L
+          <button type="button" data-k="L" aria-label="Lean left">
+            TILT<br />&lt;
           </button>
-          <button type="button" data-k="leanR" aria-label="Lean right">
-            LEAN R
+          <button type="button" data-k="R" aria-label="Lean right">
+            TILT<br />&gt;
           </button>
-          <button type="button" data-k="retry" aria-label="Retry checkpoint">
-            RTRY
+          <button type="button" data-k="N" class="nit" aria-label="Nitro boost">
+            NITRO
           </button>
         </div>
         <div class="col">
-          <button type="button" data-k="hop" aria-label="Preload hop">
+          <button type="button" data-k="H" class="hop" aria-label="Preload hop">
             HOP
           </button>
-          <button type="button" data-k="ot" class="ot" aria-label="Overtorque">
-            OT
-          </button>
-          <button type="button" data-k="brk" aria-label="Brake">BRK</button>
-          <button type="button" data-k="thr" class="thr" aria-label="Throttle">
+          <button type="button" data-k="B" aria-label="Brake">BRAKE</button>
+          <button type="button" data-k="G" class="thr" aria-label="Throttle">
             GAS
           </button>
         </div>
       </div>
+      <div id="msg"><div class="box" id="box"></div></div>
     </div>
+    <script src="sim.js"></script>
     <script src="game.js"></script>
   </body>
 </html>

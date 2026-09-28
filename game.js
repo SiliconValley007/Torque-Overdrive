@@ -1,2316 +1,1079 @@
 (() => {
   "use strict";
-  const C = document.getElementById("c"),
-    X = C.getContext("2d", { alpha: false });
-  const $ = (id) => document.getElementById(id);
-  const TAU = Math.PI * 2,
-    PI = Math.PI;
-  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v),
-    lerp = (a, b, t) => a + (b - a) * t,
-    hyp = Math.hypot;
-  const smooth = (t) => t * t * (3 - 2 * t);
-  const wrapPI = (a) => {
-    a %= TAU;
-    return a > PI ? a - TAU : a < -PI ? a + TAU : a;
+  const S = window.TOSim,
+    $ = (i) => document.getElementById(i),
+    TAU = Math.PI * 2,
+    clamp = S.clamp;
+  const cv = $("c"),
+    ctx = cv.getContext("2d", { alpha: false });
+  /* ---------- save ---------- */
+  let save = {
+    coins: 0,
+    best: 0,
+    veh: 0,
+    own: [1, 0, 0],
+    up: [
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+    ],
+    mute: 0,
   };
-
-  /* ================= constants (world scale ~33 px per metre) ================= */
-  const G = 330,
-    DT = 1 / 240,
-    MAXSTEPS = 20,
-    ITER = 10;
-  const WR = 12; // wheel radius
-  const BETA = 0.2,
-    SLOP = 0.4,
-    MAXPUSH = 220; // contact solver
-  const M_CH = 10,
-    I_CH = 2600,
-    M_W = 1.1,
-    I_W = 0.65 * 1.1 * WR * WR;
-  const T0 = 23000,
-    W0 = 58,
-    OT_MULT = 2.0,
-    W0_OT = 92; // engine: torque at standstill, no-load wheel rad/s
-  const KD = 0.0032; // aero drag
-  const BRAKE_R = 9000,
-    BRAKE_F = 13000,
-    ROLL_RES = 16,
-    ENG_BRAKE = 28;
-  const LEAN_GND = 30000,
-    LEAN_AIR = 9500,
-    AIR_DAMP = 0.55,
-    GND_ANG_DAMP = 0.6;
-  const HOP_COMP = 6,
-    HOP_KICK = 135;
-  const OT_DRAIN = 0.42,
-    OT_REGEN = 0.16,
-    OT_MIN = 0.25;
-  const MU_S = 0.22,
-    MU_K = 0.14,
-    MU_W = 0.85,
-    MU_C = 0.5;
-  const FUSE = 0.8; // bridge plank fuse (s)
-  let coasting = 1,
-    braking = 0;
-
-  /* ================= state ================= */
-  let W = 0,
-    H = 0,
-    DPR = 1,
-    running = 0,
-    t0 = 0,
-    acc = 0,
-    simT = 0,
-    shake = 0,
-    best = 0,
-    alpha = 0;
   try {
-    best = +localStorage.getItem("tod_best") || 0;
+    const s = JSON.parse(localStorage.getItem("tod2") || "null");
+    if (s && s.up && s.own) save = Object.assign(save, s);
   } catch (e) {}
-  const inp = { thr: 0, brk: 0, lean: 0, hop: 0, ot: 0, retry: 0 };
-  const ZERO = { thr: 0, brk: 0, lean: 0, hop: 0, ot: 0 };
-  let hopLock = 0;
-  const keys = {};
-  const touch = { thr: 0, brk: 0, leanL: 0, leanR: 0, hop: 0, ot: 0, retry: 0 };
-  const cam = { x: 80, y: 380, z: 1 };
-
-  /* ================= particles (pooled) ================= */
-  const NP = 160,
-    dust = Array.from({ length: NP }, () => ({
+  const persist = () => {
+    try {
+      localStorage.setItem("tod2", JSON.stringify(save));
+    } catch (e) {}
+  };
+  const UPN = [
+    ["Engine Torque", "Climbing power & top speed"],
+    ["Dual Suspension", "Stiffness & impact absorption"],
+    ["Tire Grip", "Traction on steep slopes"],
+    ["Fuel Tank", "Max fuel volume"],
+  ];
+  const MAXL = 8,
+    cost = (l) => Math.round(25 * Math.pow(1.55, l));
+  /* ---------- state ---------- */
+  let sim,
+    state = "menu",
+    W = 1,
+    H = 1,
+    DPR = 1,
+    qual = 1,
+    k = 1,
+    last = 0,
+    acc = 0,
+    ema = 16,
+    slow = 0,
+    shake = 0;
+  const cam = { x: 0, y: 0, z: 1 },
+    keys = {},
+    tch = {},
+    inp = { thr: 0, brk: 0, lean: 0, nit: 0, hop: 0 };
+  const params = new URLSearchParams(location.search);
+  function newRun(seedIn) {
+    const seed =
+      seedIn != null
+        ? seedIn >>> 0
+        : crypto.getRandomValues
+          ? crypto.getRandomValues(new Uint32Array(1))[0]
+          : (Math.random() * 4294967296) >>> 0;
+    const bi = seed % S.BIOMES.length;
+    sim = new S.Sim({ seed, biome: bi, veh: save.veh, up: save.up[save.veh] });
+    sim.ev = onEv;
+    cam.x = sim.x;
+    cam.y = sim.y;
+    buildBg();
+    acc = 0;
+  }
+  /* ---------- particles (pooled) ---------- */
+  const NP = 320,
+    P = Array.from({ length: NP }, () => ({
       a: 0,
       x: 0,
       y: 0,
       vx: 0,
       vy: 0,
       s: 1,
-      l: 0.4,
-      c: 0,
+      l: 1,
+      t: 0,
     }));
-  let di = 0;
-  function emit(x, y, n, sp, c, dvx, dvy) {
+  let pi = 0;
+  function emit(t, x, y, n, sp, vx, vy) {
+    n = Math.ceil(n * qual);
     for (let i = 0; i < n; i++) {
-      const p = dust[di++ % NP],
+      const p = P[pi++ % NP],
         a = Math.random() * TAU,
         s = (0.3 + Math.random()) * sp;
       p.a = 1;
+      p.t = t;
       p.x = x;
       p.y = y;
-      p.vx = Math.cos(a) * s + (dvx || 0);
-      p.vy = Math.sin(a) * s - 8 + (dvy || 0);
-      p.s = 1.2 + Math.random() * 3;
-      p.l = 0.3 + Math.random() * 0.55;
-      p.c = c || 0;
+      p.vx = Math.cos(a) * s + (vx || 0);
+      p.vy = Math.sin(a) * s + (vy || 0);
+      p.s = 1.5 + Math.random() * 3;
+      p.l = t === 2 ? 0.25 + Math.random() * 0.2 : 0.4 + Math.random() * 0.6;
     }
   }
-  function stepParticles(h) {
-    for (const p of dust) {
+  function stepP(h) {
+    for (let i = 0; i < NP; i++) {
+      const p = P[i];
       if (p.a <= 0) continue;
       p.x += p.vx * h;
       p.y += p.vy * h;
-      p.vy += (p.c ? -30 : 60) * h;
-      p.vx *= 1 - 1.2 * h;
+      p.vy += (p.t === 1 || p.t === 2 ? -25 : p.t === 3 ? 0 : 160) * h;
+      p.vx *= 1 - 1.5 * h;
       p.a -= h / p.l;
-      if (p.c) p.s += h * 6;
+      if (p.t === 1) p.s += h * 8;
     }
   }
-
-  /* ================= audio ================= */
+  /* ---------- audio ---------- */
   let AC = null,
-    engOsc = null,
-    engGain = null,
-    engF = 80;
-  function audioInit() {
-    if (AC) return;
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
+    eo = null,
+    eg = null;
+  function audio() {
+    if (save.mute) return;
     try {
-      AC = new Ctx();
-      engOsc = AC.createOscillator();
-      engOsc.type = "sawtooth";
-      const f = AC.createBiquadFilter();
-      f.type = "lowpass";
-      f.frequency.value = 880;
-      engGain = AC.createGain();
-      engGain.gain.value = 0;
-      engOsc.connect(f);
-      f.connect(engGain);
-      engGain.connect(AC.destination);
-      engOsc.start();
+      if (!AC) {
+        AC = new (window.AudioContext || window.webkitAudioContext)();
+        eo = AC.createOscillator();
+        eg = AC.createGain();
+        const f = AC.createBiquadFilter();
+        eo.type = "sawtooth";
+        f.type = "lowpass";
+        f.frequency.value = 700;
+        eg.gain.value = 0;
+        eo.connect(f);
+        f.connect(eg);
+        eg.connect(AC.destination);
+        eo.start();
+      }
+      if (AC.state === "suspended") AC.resume();
     } catch (e) {
       AC = null;
-      engOsc = null;
-      engGain = null;
     }
   }
-  function beep(f, d, t, g) {
-    if (!AC) return;
+  function blip(f, d, t) {
+    if (!AC || save.mute) return;
     try {
       const o = AC.createOscillator(),
-        gn = AC.createGain();
-      o.type = t || "square";
+        g = AC.createGain();
+      o.type = t || "sine";
       o.frequency.value = f;
-      gn.gain.value = g || 0.07;
-      gn.gain.exponentialRampToValueAtTime(
-        0.0008,
-        AC.currentTime + (d || 0.12),
-      );
-      o.connect(gn);
-      gn.connect(AC.destination);
+      g.gain.setValueAtTime(0.12, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + d);
+      o.connect(g);
+      g.connect(AC.destination);
       o.start();
-      o.stop(AC.currentTime + (d || 0.12));
+      o.stop(AC.currentTime + d);
     } catch (e) {}
   }
-
-  /* ================= track ================= */
-  const TRACK = {
-    x: [],
-    y: [],
-    seg: [],
-    nx: [],
-    ny: [],
-    n: 0,
-    fin: 0,
-    haz: [],
-    cps: [],
-    pl: [null],
-    deathY: 0,
-    minY: 0,
-    maxY: 0,
-  };
-  function buildTrack() {
-    const PX = TRACK.x,
-      PY = TRACK.y,
-      SG = TRACK.seg;
-    PX.length = PY.length = SG.length = 0;
-    TRACK.haz.length = 0;
-    TRACK.cps.length = 0;
-    TRACK.pl.length = 1;
-    let cx = -560,
-      cy = 420;
-    const STEP = 8;
-    const push = (x, y, s) => {
-      if (PX.length) SG.push(s | 0);
-      PX.push(x);
-      PY.push(y);
-    };
-    push(cx, cy, 0);
-    const flat = (L) => {
-      const n = Math.max(1, Math.round(L / STEP)),
-        x0 = cx;
-      for (let i = 1; i <= n; i++) push(x0 + (L * i) / n, cy, 0);
-      cx = x0 + L;
-    };
-    const ramp = (L, rise) => {
-      const n = Math.max(2, Math.round(L / STEP)),
-        x0 = cx,
-        y0 = cy;
-      for (let i = 1; i <= n; i++) {
-        const t = i / n;
-        push(x0 + L * t, y0 + rise * smooth(t), 0);
-      }
-      cx = x0 + L;
-      cy = y0 + rise;
-    };
-    const gap = (w, dy) => {
-      push(cx + w, cy + dy, -1);
-      cx += w;
-      cy += dy;
-    };
-    const cp = () => TRACK.cps.push({ x: cx - 60, y: cy });
-    const pad = (w, power) => {
-      TRACK.haz.push({ t: "cat", x: cx, w, y: cy, power, used: 0, anim: 0 });
-      flat(w);
-    };
-    const bridge = (np, lp) => {
-      const x0 = cx,
-        y0 = cy;
-      for (let k = 0; k < np; k++) {
-        const id = TRACK.pl.length;
-        TRACK.pl.push({
-          id,
-          x0: x0 + k * lp,
-          x1: x0 + (k + 1) * lp,
-          y: y0,
-          state: 0,
-          fuse: 0,
-          body: null,
-          seed: Math.random(),
-        });
-        push(x0 + (k + 1) * lp, y0, id);
-      }
-      cx = x0 + np * lp;
-      TRACK.haz.push({ t: "bridge", x: x0, w: np * lp, y: y0 });
-    };
-    const loop = (R, h) => {
-      const x0 = cx,
-        y0 = cy,
-        n = Math.ceil((TAU * R) / STEP);
-      TRACK.haz.push({ t: "loop", x: x0, y: y0, R, h });
-      for (let i = 1; i <= n; i++) {
-        const t = (TAU * i) / n;
-        push(x0 + R * Math.sin(t), y0 - R + R * Math.cos(t) - (h * t) / TAU, 0);
-      }
-      cx = x0;
-      cy = y0 - h;
-    };
-    // ---- level layout (validated by tests/verify.js) ----
-    flat(640);
-    cp(); // start, CP0 at x=80
-    ramp(260, -44);
-    ramp(240, 30);
-    ramp(220, -52);
-    ramp(260, 44);
-    flat(140);
-    ramp(300, -70);
-    flat(60);
-    ramp(320, 110);
-    flat(120);
-    cp(); // CP1
-    ramp(150, -40);
-    gap(96, 34);
-    ramp(170, 30);
-    flat(300); // ramp jump
-    pad(80, 285);
-    gap(150, 0);
-    flat(300);
-    cp(); // catapult over pit, CP2
-    flat(200);
-    bridge(11, 30);
-    flat(260); // collapsing bridge
-    ramp(240, -60);
-    ramp(240, 40);
-    ramp(200, -50);
-    ramp(240, 70);
-    flat(80);
-    cp(); // CP3
-    ramp(200, 36);
-    flat(620);
-    loop(72, 30);
-    flat(360); // loop
-    ramp(240, -70);
-    flat(160);
-    cp();
-    pad(80, 300);
-    gap(150, -40);
-    ramp(200, -30);
-    flat(200);
-    ramp(260, -50);
-    ramp(260, 60);
-    flat(200);
-    TRACK.fin = cx;
-    flat(360);
-    // ---- derived data ----
-    const n = PX.length;
-    TRACK.n = n;
-    let mn = 1e9,
-      mx = -1e9;
-    for (let i = 0; i < n; i++) {
-      if (PY[i] < mn) mn = PY[i];
-      if (PY[i] > mx) mx = PY[i];
-    }
-    TRACK.minY = mn;
-    TRACK.maxY = mx;
-    TRACK.deathY = mx + 420;
-    const sn = (i) => {
-      const dx = PX[i + 1] - PX[i],
-        dy = PY[i + 1] - PY[i],
-        L = hyp(dx, dy) || 1;
-      return [dy / L, -dx / L];
-    };
-    TRACK.nx = new Array(n).fill(0);
-    TRACK.ny = new Array(n).fill(-1);
-    for (let i = 0; i < n; i++) {
-      let ax = 0,
-        ay = 0;
-      for (const j of [i - 1, i]) {
-        if (j >= 0 && j < n - 1 && SG[j] !== -1) {
-          const [a, b] = sn(j);
-          ax += a;
-          ay += b;
-        }
-      }
-      const L = hyp(ax, ay);
-      if (L > 1e-6) {
-        TRACK.nx[i] = ax / L;
-        TRACK.ny[i] = ay / L;
-      }
-    }
-  }
-  const segSolid = (i) => {
-    const s = TRACK.seg[i];
-    return s === 0 ? true : s < 0 ? false : TRACK.pl[s].state < 2;
-  };
-  const Q = { d: 1e9, nx: 0, ny: -1, si: 0, ok: 0 };
-  const QW = 26;
-  function qg(px, py, si) {
-    const PX = TRACK.x,
-      PY = TRACK.y,
-      ns = TRACK.n - 1;
-    let i0 = si - QW,
-      i1 = si + QW;
-    if (i0 < 0) i0 = 0;
-    if (i1 > ns - 1) i1 = ns - 1;
-    let best = 1e18,
-      bi = -1,
-      bt = 0,
-      bqx = 0,
-      bqy = 0;
-    for (let i = i0; i <= i1; i++) {
-      if (!segSolid(i)) continue;
-      const ax = PX[i],
-        ay = PY[i],
-        abx = PX[i + 1] - ax,
-        aby = PY[i + 1] - ay,
-        l2 = abx * abx + aby * aby || 1;
-      let t = ((px - ax) * abx + (py - ay) * aby) / l2;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const qx = ax + abx * t,
-        qy = ay + aby * t,
-        dx = px - qx,
-        dy = py - qy,
-        d2 = dx * dx + dy * dy;
-      if (d2 < best) {
-        best = d2;
-        bi = i;
-        bt = t;
-        bqx = qx;
-        bqy = qy;
-      }
-    }
-    if (bi < 0) {
-      Q.ok = 0;
-      Q.d = 1e9;
-      Q.nx = 0;
-      Q.ny = -1;
-      Q.si = si;
-      return Q;
-    }
-    const abx = PX[bi + 1] - PX[bi],
-      aby = PY[bi + 1] - PY[bi],
-      L = hyp(abx, aby) || 1;
-    const side = (px - bqx) * (aby / L) + (py - bqy) * (-abx / L),
-      dist = Math.sqrt(best);
-    let nx = TRACK.nx[bi] + (TRACK.nx[bi + 1] - TRACK.nx[bi]) * bt,
-      ny = TRACK.ny[bi] + (TRACK.ny[bi + 1] - TRACK.ny[bi]) * bt;
-    const nl = hyp(nx, ny) || 1;
-    nx /= nl;
-    ny /= nl;
-    Q.ok = 1;
-    Q.d = side >= 0 ? dist : -dist;
-    Q.nx = nx;
-    Q.ny = ny;
-    Q.si = bi;
-    return Q;
-  }
-  function groundAt(x, hint) {
-    const PX = TRACK.x,
-      PY = TRACK.y;
-    let best = 1e9,
-      by = 0,
-      bi = 0;
-    for (let i = 0; i < TRACK.n - 1; i++) {
-      if (!segSolid(i)) continue;
-      const x0 = PX[i],
-        x1 = PX[i + 1];
-      if (x >= Math.min(x0, x1) && x <= Math.max(x0, x1) && x0 !== x1) {
-        const t = (x - x0) / (x1 - x0),
-          y = PY[i] + t * (PY[i + 1] - PY[i]);
-        if (Math.abs(y - hint) < best) {
-          best = Math.abs(y - hint);
-          by = y;
-          bi = i;
-        }
-      }
-    }
-    return { y: by, i: bi };
-  }
-
-  /* ================= rigid bodies & joints ================= */
-  const mkBody = (m, I) => ({
-    x: 0,
-    y: 0,
-    a: 0,
-    vx: 0,
-    vy: 0,
-    w: 0,
-    m,
-    im: 1 / m,
-    I,
-    iI: 1 / I,
-    px: 0,
-    py: 0,
-    pa: 0,
-  });
-  const B = {
-    ch: mkBody(M_CH, I_CH),
-    fw: mkBody(M_W, I_W),
-    rw: mkBody(M_W, I_W),
-    alive: 1,
-    hopT: 0,
-    otT: 1,
-    otOn: 0,
-    otLock: 0,
-    air: 0,
-    rc: 0,
-    fc: 0,
-    safe: 0,
-    crashT: 0,
-    fin: 0,
-    cp: 0,
-    cpTime: 0,
-    tookCp: 0,
-    stuckT: 0,
-    invT: 0,
-    lastImpact: 0,
-    planks: [],
-    ragdoll: null,
-  };
-  const mkJoint = (wh, lax, lay, ux, uy, s0, lo, hi, k, c) => ({
-    wh,
-    lax,
-    lay,
-    ux,
-    uy,
-    s0,
-    lo,
-    hi,
-    k,
-    c,
-    jSpring: 0,
-    jPerp: 0,
-    jLo: 0,
-    jHi: 0,
-    rAx: 0,
-    rAy: 0,
-    axx: 0,
-    axy: 0,
-    ayx: 0,
-    ayy: 0,
-    sAx: 0,
-    sAy: 0,
-    mAx: 0,
-    mAxial: 0,
-    mPerp: 0,
-    C: 0,
-    gamma: 0,
-    bias: 0,
-    perpC: 0,
-    s: 0,
-    ext: 0,
-  });
-  const FORK_A = (27 * PI) / 180,
-    SWING_A = -0.17;
-  const J = {
-    f: mkJoint(
-      B.fw,
-      13,
-      2,
-      Math.sin(FORK_A),
-      Math.cos(FORK_A),
-      26.94,
-      26.94 - 10,
-      26.94 + 6,
-      420,
-      120,
-    ),
-    r: mkJoint(
-      B.rw,
-      -14,
-      3,
-      SWING_A,
-      Math.sqrt(1 - SWING_A * SWING_A),
-      23.34,
-      23.34 - 9,
-      23.34 + 6,
-      440,
-      130,
-    ),
-  };
-  // contact shapes: 0 rear wheel, 1 front wheel, 2 head, 3 belly, 4 tail, 5 nose
-  const CT = [
-    { b: B.rw, kind: 0, lx: 0, ly: 0, r: WR, mu: MU_W },
-    { b: B.fw, kind: 0, lx: 0, ly: 0, r: WR, mu: MU_W },
-    { b: B.ch, kind: 1, lx: 4, ly: -27, r: 5.5, mu: MU_C, head: 1 },
-    { b: B.ch, kind: 1, lx: 0, ly: 11, r: 4, mu: MU_C },
-    { b: B.ch, kind: 1, lx: -25, ly: -4, r: 3, mu: MU_C },
-    { b: B.ch, kind: 1, lx: 25, ly: -6, r: 3, mu: MU_C },
-  ].map((c) =>
-    Object.assign(c, {
-      jn: 0,
-      jt: 0,
-      on: 0,
-      nx: 0,
-      ny: -1,
-      rcx: 0,
-      rcy: 0,
-      mN: 0,
-      mT: 0,
-      sep: 9,
-      vn0: 0,
-      si: 0,
-      seg: 0,
-    }),
-  );
-
-  function applyImp(b, jx, jy, rx, ry) {
-    b.vx += jx * b.im;
-    b.vy += jy * b.im;
-    b.w += (rx * jy - ry * jx) * b.iI;
-  }
-
-  function prepJoint(j, h) {
-    const ch = B.ch,
-      wh = j.wh,
-      ca = Math.cos(ch.a),
-      sa = Math.sin(ch.a);
-    j.rAx = ca * j.lax - sa * j.lay;
-    j.rAy = sa * j.lax + ca * j.lay;
-    j.axx = ca * j.ux - sa * j.uy;
-    j.axy = sa * j.ux + ca * j.uy;
-    j.ayx = -j.axy;
-    j.ayy = j.axx;
-    const dx = wh.x - ch.x,
-      dy = wh.y - ch.y,
-      ddx = dx - j.rAx,
-      ddy = dy - j.rAy;
-    j.sAx = dx * j.axy - dy * j.axx;
-    j.sAy = dx * j.ayy - dy * j.ayx;
-    const invX = ch.im + wh.im + ch.iI * j.sAx * j.sAx;
-    j.mAx = 1 / invX;
-    j.s = ddx * j.axx + ddy * j.axy;
-    j.ext = j.s;
-    j.C = j.s - (j.s0 - B.hopT * HOP_COMP);
-    j.gamma = 1 / (h * (j.c + h * j.k));
-    j.bias = j.C * h * j.k * j.gamma;
-    j.mAxial = 1 / (invX + j.gamma);
-    j.mPerp = 1 / (ch.im + wh.im + ch.iI * j.sAy * j.sAy);
-    j.perpC = ddx * j.ayx + ddy * j.ayy;
-  }
-  function jointImp(j, lam, ax, ay, sA) {
-    const ch = B.ch,
-      wh = j.wh;
-    ch.vx -= ch.im * lam * ax;
-    ch.vy -= ch.im * lam * ay;
-    ch.w -= ch.iI * lam * sA;
-    wh.vx += wh.im * lam * ax;
-    wh.vy += wh.im * lam * ay;
-  }
-  function warmJoint(j) {
-    jointImp(j, j.jSpring + j.jLo - j.jHi, j.axx, j.axy, j.sAx);
-    jointImp(j, j.jPerp, j.ayx, j.ayy, j.sAy);
-  }
-  function solveJoint(j, h) {
-    const ch = B.ch,
-      wh = j.wh;
-    // spring / damper (soft constraint)
-    let cd = (wh.vx - ch.vx) * j.axx + (wh.vy - ch.vy) * j.axy - j.sAx * ch.w;
-    let lam = -j.mAxial * (cd + j.bias + j.gamma * j.jSpring);
-    j.jSpring += lam;
-    jointImp(j, lam, j.axx, j.axy, j.sAx);
-    // lower travel limit (bump stop, compression)
-    let Clo = j.s - j.lo;
-    cd = (wh.vx - ch.vx) * j.axx + (wh.vy - ch.vy) * j.axy - j.sAx * ch.w;
-    lam = -j.mAx * (cd + (Clo > 0 ? Clo / h : (BETA * Clo) / h));
-    let nw = Math.max(j.jLo + lam, 0);
-    lam = nw - j.jLo;
-    j.jLo = nw;
-    jointImp(j, lam, j.axx, j.axy, j.sAx);
-    // upper travel limit (droop)
-    let Chi = j.hi - j.s;
-    cd = -((wh.vx - ch.vx) * j.axx + (wh.vy - ch.vy) * j.axy - j.sAx * ch.w);
-    lam = -j.mAx * (cd + (Chi > 0 ? Chi / h : (BETA * Chi) / h));
-    nw = Math.max(j.jHi + lam, 0);
-    lam = nw - j.jHi;
-    j.jHi = nw;
-    jointImp(j, -lam, j.axx, j.axy, j.sAx);
-    // keep wheel on the suspension axis
-    cd = (wh.vx - ch.vx) * j.ayx + (wh.vy - ch.vy) * j.ayy - j.sAy * ch.w;
-    lam = -j.mPerp * (cd + (0.25 * j.perpC) / h);
-    j.jPerp += lam;
-    jointImp(j, lam, j.ayx, j.ayy, j.sAy);
-  }
-
-  function buildContacts() {
-    for (const c of CT) {
-      const b = c.b;
-      let px, py;
-      if (c.kind) {
-        const ca = Math.cos(b.a),
-          sa = Math.sin(b.a);
-        px = b.x + ca * c.lx - sa * c.ly;
-        py = b.y + sa * c.lx + ca * c.ly;
-      } else {
-        px = b.x;
-        py = b.y;
-      }
-      const q = qg(px, py, c.si);
-      c.si = q.si;
-      const sep = q.d - c.r;
-      if (!q.ok || sep > 2.5) {
-        if (c.on) {
-          c.on = 0;
-          c.jn = 0;
-          c.jt = 0;
-        }
-        continue;
-      }
-      if (!c.on) {
-        c.jn = 0;
-        c.jt = 0;
-      }
-      c.on = 1;
-      c.nx = q.nx;
-      c.ny = q.ny;
-      c.sep = sep;
-      c.seg = q.si;
-      c.rcx = px - b.x - q.nx * c.r;
-      c.rcy = py - b.y - q.ny * c.r;
-      const rn = c.rcx * q.ny - c.rcy * q.nx,
-        tx = -q.ny,
-        ty = q.nx,
-        rt = c.rcx * ty - c.rcy * tx;
-      c.mN = 1 / (b.im + b.iI * rn * rn);
-      c.mT = 1 / (b.im + b.iI * rt * rt);
-      c.vn0 = (b.vx - b.w * c.rcy) * q.nx + (b.vy + b.w * c.rcx) * q.ny;
-    }
-  }
-  function warmContacts() {
-    for (const c of CT) {
-      if (!c.on) continue;
-      const tx = -c.ny,
-        ty = c.nx;
-      applyImp(
-        c.b,
-        c.nx * c.jn + tx * c.jt,
-        c.ny * c.jn + ty * c.jt,
-        c.rcx,
-        c.rcy,
+  function engineSnd() {
+    if (!AC || !eg) return;
+    const on =
+      state === "run" && !save.mute && sim && !sim.crashed && sim.fuel > 0;
+    const w = sim ? Math.abs(sim.wh[0].om) : 0;
+    try {
+      const n = sim && sim.nitOn ? 1 : 0;
+      eo.frequency.setTargetAtTime(
+        38 + w * 1.6 + sim.thrS * 25 + n * 40,
+        AC.currentTime,
+        0.05,
       );
-    }
-  }
-  function solveContacts(h) {
-    for (const c of CT) {
-      if (!c.on) continue;
-      const b = c.b,
-        nx = c.nx,
-        ny = c.ny,
-        tx = -ny,
-        ty = nx;
-      let vx = b.vx - b.w * c.rcy,
-        vy = b.vy + b.w * c.rcx;
-      const vn = vx * nx + vy * ny;
-      const target =
-        c.sep > 0
-          ? -c.sep / h
-          : Math.min((BETA * Math.max(-c.sep - SLOP, 0)) / h, MAXPUSH);
-      let lam = (target - vn) * c.mN;
-      const nw = Math.max(c.jn + lam, 0);
-      lam = nw - c.jn;
-      c.jn = nw;
-      applyImp(b, nx * lam, ny * lam, c.rcx, c.rcy);
-      vx = b.vx - b.w * c.rcy;
-      vy = b.vy + b.w * c.rcx;
-      const vt = vx * tx + vy * ty;
-      lam = -vt * c.mT;
-      let mu = c.mu;
-      if (c.kind === 0) {
-        const st = Math.abs(nx),
-          ct = Math.max(Math.abs(ny), 1e-4);
-        if (coasting) mu = st > MU_S * ct ? MU_K : MU_S;
-        else if (braking) mu = MU_W;
-      }
-      const mx = mu * c.jn,
-        nt = clamp(c.jt + lam, -mx, mx);
-      lam = nt - c.jt;
-      c.jt = nt;
-      applyImp(b, tx * lam, ty * lam, c.rcx, c.rcy);
-    }
-  }
-
-  /* ================= bike setup ================= */
-  function resetBike(cpIdx) {
-    const cps = TRACK.cps;
-    cpIdx = clamp(cpIdx | 0, 0, cps.length - 1);
-    const cp = cps[cpIdx],
-      g = groundAt(cp.x, cp.y);
-    const dx = TRACK.x[g.i + 1] - TRACK.x[g.i],
-      dy = TRACK.y[g.i + 1] - TRACK.y[g.i];
-    const ang = Math.atan2(dy, dx),
-      ca = Math.cos(ang),
-      sa = Math.sin(ang);
-    const nx = sa,
-      ny = -ca; // normal (up)
-    const gx = cp.x,
-      gy = g.y;
-    const rest = (j) => [j.lax + j.ux * j.s0, j.lay + j.uy * j.s0];
-    const [fx, fy] = rest(J.f),
-      [rx, ry] = rest(J.r);
-    // chassis centre so that the lower wheel just touches the ground
-    const chx = gx + nx * (WR + 26) * 1,
-      chy = gy + ny * (WR + 26);
-    const place = (b, lx, ly, x, y, a) => {
-      b.a = a;
-      b.x = x + ca * lx - sa * ly;
-      b.y = y + sa * lx + ca * ly;
-      b.vx = b.vy = b.w = 0;
-      b.px = b.x;
-      b.py = b.y;
-      b.pa = b.a;
-    };
-    B.ch.a = ang;
-    B.ch.x = chx;
-    B.ch.y = chy;
-    B.ch.vx = B.ch.vy = B.ch.w = 0;
-    B.ch.px = chx;
-    B.ch.py = chy;
-    B.ch.pa = ang;
-    place(B.fw, fx, fy, chx, chy, 0);
-    place(B.rw, rx, ry, chx, chy, 0);
-    for (const j of [J.f, J.r]) {
-      j.jSpring = j.jPerp = j.jLo = j.jHi = 0;
-    }
-    for (const c of CT) {
-      c.jn = c.jt = 0;
-      c.on = 0;
-      c.si = g.i;
-    }
-    B.alive = 1;
-    B.hopT = 0;
-    B.otT = 1;
-    B.otOn = 0;
-    B.otLock = 0;
-    B.air = 0;
-    B.rc = B.fc = 0;
-    B.safe = 0.6;
-    B.crashT = 0;
-    B.fin = 0;
-    B.stuckT = 0;
-    B.invT = 0;
-    B.ragdoll = null;
-    B.planks.length = 0;
-    B.cp = cpIdx;
-    for (const z of TRACK.haz) {
-      if (z.t === "cat") {
-        z.used = 0;
-        z.anim = 0;
-      }
-    }
-    for (let i = 1; i < TRACK.pl.length; i++) {
-      const p = TRACK.pl[i];
-      p.state = 0;
-      p.fuse = 0;
-      p.body = null;
-    }
-    rider.reset();
-    cam.x = chx;
-    cam.y = chy - 36;
-    cam.z = 1;
-    settleBike();
-  }
-
-  /* ================= rider (articulated skeleton, procedural + IK) ================= */
-  const LT = 19,
-    LH = 10.5,
-    LU = 12,
-    LF = 12,
-    LTH = 12.5,
-    LSH = 12.5;
-  const SEAT = [-7, -9],
-    GRIP = [16.5, -14.5],
-    PEG = [-2, 5];
-  const rider = {
-    phi: 0.3,
-    phiV: 0,
-    drop: 0,
-    dropV: 0,
-    stand: 0,
-    head: 0,
-    headV: 0,
-    fx: 0,
-    fup: 1,
-    pvx: 0,
-    pvy: 0,
-    P: [0, 0],
-    Cst: [0, 0],
-    H: [0, 0],
-    EL: [0, 0],
-    KN: [0, 0],
-    FT: [0, 0],
-    EL2: [0, 0],
-    KN2: [0, 0],
-    FT2: [0, 0],
-    reset() {
-      this.phi = 0.3;
-      this.phiV = 0;
-      this.drop = 0;
-      this.dropV = 0;
-      this.stand = 0;
-      this.head = 0;
-      this.headV = 0;
-      this.fx = 0;
-      this.fup = 1;
-      this.pvx = B.ch.vx;
-      this.pvy = B.ch.vy;
-      this.pose();
-    },
-    spring(cur, vel, tgt, om, h) {
-      // critically-damped spring toward tgt
-      const x = cur - tgt,
-        a = vel + om * x,
-        e = Math.exp(-om * h);
-      return [tgt + (x + a * h) * e, (vel - om * a * h) * e];
-    },
-    update(h, c) {
-      const ch = B.ch;
-      // specific force in the chassis frame (what the rider actually "feels")
-      const ax = (ch.vx - this.pvx) / h,
-        ay = (ch.vy - this.pvy) / h - G;
-      this.pvx = ch.vx;
-      this.pvy = ch.vy;
-      const ca = Math.cos(ch.a),
-        sa = Math.sin(ch.a);
-      const fx = ax * ca + ay * sa,
-        fup = ax * sa - ay * ca;
-      const k = 1 - Math.exp(-h / 0.07);
-      this.fx += (fx - this.fx) * k;
-      this.fup += (fup - this.fup) * k;
-      const nx = clamp(this.fx / (0.5 * G), -1, 1),
-        nu = clamp(this.fup / G, -0.2, 3);
-      const comp =
-        (1 -
-          (J.f.s - J.f.lo) / (J.f.s0 - J.f.lo) +
-          1 -
-          (J.r.s - J.r.lo) / (J.r.s0 - J.r.lo)) *
-        0.5;
-      const airT = B.air ? 1 : 0;
-      // torso: lean back on throttle/wheelie, tuck forward on downhills, brace on drops
-      const downhill = clamp(wrapPI(ch.a), -1.2, 1.2);
-      let tgt =
-        0.34 -
-        0.62 * nx -
-        0.28 * wrapPI(ch.a) +
-        0.34 * c.lean +
-        0.22 * (c.brk ? 1 : 0) -
-        0.55 * Math.max(0, downhill) -
-        0.18 * airT;
-      if (nu > 1.6) tgt += 0.12;
-      tgt = clamp(tgt, -0.72, 1.05);
-      [this.phi, this.phiV] = this.spring(this.phi, this.phiV, tgt, 15, h);
-      // hips absorb load (knees / elbows bend under heavy drops), float up when weightless
-      let dt = clamp((nu - 1) * 3.2, -3, 7) + comp * 3.5 + (nu > 1.8 ? 4 : 0);
-      [this.drop, this.dropV] = this.spring(this.drop, this.dropV, dt, 20, h);
-      const st = B.air || nu < 0.45 ? 1 : c.hop ? 0.6 : 0;
-      this.stand += (st - this.stand) * (1 - Math.exp(-h / 0.12));
-      // head lags the torso a little (neck)
-      [this.head, this.headV] = this.spring(
-        this.head,
-        this.headV,
-        -0.35 * this.phiV * 0.1 - 0.25 * nx * 0.3,
-        18,
-        h,
+      eg.gain.setTargetAtTime(
+        on ? 0.03 + 0.03 * sim.thrS + n * 0.02 : 0,
+        AC.currentTime,
+        0.08,
       );
-      this.pose();
-    },
-    ik(x0, y0, x1, y1, l1, l2, sign) {
-      let dx = x1 - x0,
-        dy = y1 - y0,
-        d = hyp(dx, dy) || 1e-3;
-      const reach = Math.min(
-        d,
-        l1 + l2 - 0.01,
-        Math.max(Math.abs(l1 - l2) + 0.01, d),
-      );
-      const a = (l1 * l1 - l2 * l2 + reach * reach) / (2 * reach),
-        hh = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
-      const ux = dx / d,
-        uy = dy / d;
-      return [x0 + ux * a - uy * hh * sign, y0 + uy * a + ux * hh * sign];
-    },
-    pose() {
-      const st = this.stand,
-        dr = this.drop;
-      const tuck = clamp(dr / 8, 0, 1);
-      let px = SEAT[0] + st * 3.5 - tuck * 2,
-        py = SEAT[1] - st * 7.5 + dr * 0.55;
-      const phi = this.phi;
-      let cx = px + LT * Math.sin(phi),
-        cy = py - LT * Math.cos(phi);
-      // hands must stay on the grips: if out of reach slide the whole upper body forward
-      let gx = GRIP[0],
-        gy = GRIP[1],
-        dd = hyp(gx - cx, gy - cy);
-      const maxR = LU + LF - 0.6;
-      if (dd > maxR) {
-        const e = dd - maxR,
-          ux = (gx - cx) / dd,
-          uy = (gy - cy) / dd;
-        px += ux * e;
-        py += uy * e;
-        cx += ux * e;
-        cy += uy * e;
-      }
-      this.P[0] = px;
-      this.P[1] = py;
-      this.Cst[0] = cx;
-      this.Cst[1] = cy;
-      const hp = phi + 0.16 + this.head;
-      this.H[0] = cx + (LH - 1) * Math.sin(hp);
-      this.H[1] = cy - (LH - 1) * Math.cos(hp);
-      // arms (elbows bend down/back), legs (knees forward)
-      cx += tuck * 1.8;
-      cy += tuck * 2.4;
-      let e = this.ik(cx, cy, GRIP[0], GRIP[1], LU, LF, 1);
-      this.EL[0] = e[0];
-      this.EL[1] = e[1];
-      e = this.ik(px, py, PEG[0], PEG[1], LTH * 0.92, LSH * 0.92, -1);
-      this.KN[0] = e[0];
-      this.KN[1] = e[1];
-      this.FT[0] = PEG[0];
-      this.FT[1] = PEG[1];
-      e = this.ik(cx, cy, GRIP[0] - 1.5, GRIP[1] + 1, LU, LF, 1);
-      this.EL2[0] = e[0];
-      this.EL2[1] = e[1];
-      e = this.ik(px, py, PEG[0] + 3, PEG[1] - 0.5, LTH * 0.92, LSH * 0.92, -1);
-      this.KN2[0] = e[0];
-      this.KN2[1] = e[1];
-      this.FT2[0] = PEG[0] + 3;
-      this.FT2[1] = PEG[1] - 0.5;
-    },
-  };
-
-  /* ================= crash / ragdoll (verlet skeleton) ================= */
-  // nodes: 0 head,1 chest,2 pelvis,3 elbowL,4 handL,5 elbowR,6 handR,7 kneeL,8 footL,9 kneeR,10 footR
-  const RG_LINKS = [
-    [0, 1, 10.5],
-    [1, 2, 19],
-    [1, 3, 12],
-    [3, 4, 12],
-    [1, 5, 12],
-    [5, 6, 12],
-    [2, 7, 12.5],
-    [7, 8, 12.5],
-    [2, 9, 12.5],
-    [9, 10, 12.5],
-    [0, 2, 29],
-    [3, 5, 22],
-    [7, 9, 10],
-    [1, 7, 27],
-    [1, 9, 27],
-    [2, 3, 26],
-    [2, 5, 26],
-  ];
-  function spawnRagdoll() {
-    const ch = B.ch,
-      ca = Math.cos(ch.a),
-      sa = Math.sin(ch.a);
-    const pts = [
-      rider.H,
-      rider.Cst,
-      rider.P,
-      rider.EL,
-      [GRIP[0], GRIP[1]],
-      rider.EL2,
-      [GRIP[0] - 1.5, GRIP[1] + 1],
-      rider.KN,
-      rider.FT,
-      rider.KN2,
-      rider.FT2,
-    ];
-    const rg = [];
-    for (const p of pts) {
-      const wx = ch.x + ca * p[0] - sa * p[1],
-        wy = ch.y + sa * p[0] + ca * p[1];
-      const vx = ch.vx - ch.w * (wy - ch.y) + (Math.random() - 0.5) * 60,
-        vy = ch.vy + ch.w * (wx - ch.x) - 30 + (Math.random() - 0.5) * 40;
-      rg.push({
-        x: wx,
-        y: wy,
-        px: wx - vx * DT,
-        py: wy - vy * DT,
-        si: ch.si || 0,
-        r: p === rider.H ? 5.5 : 2.6,
-      });
-    }
-    B.ragdoll = rg;
+    } catch (e) {}
   }
-  function stepRagdoll(h) {
-    const rg = B.ragdoll;
-    if (!rg) return;
-    for (const p of rg) {
-      const vx = (p.x - p.px) * 0.997,
-        vy = (p.y - p.py) * 0.997;
-      p.px = p.x;
-      p.py = p.y;
-      p.x += vx;
-      p.y += vy + G * h * h;
-    }
-    for (let it = 0; it < 8; it++) {
-      for (const [a, b, L] of RG_LINKS) {
-        const p = rg[a],
-          q = rg[b],
-          dx = q.x - p.x,
-          dy = q.y - p.y,
-          d = hyp(dx, dy) || 1e-4,
-          e = ((d - L) / d) * 0.5;
-        p.x += dx * e;
-        p.y += dy * e;
-        q.x -= dx * e;
-        q.y -= dy * e;
-      }
-      for (const p of rg) {
-        const q = qg(p.x, p.y, p.si);
-        p.si = q.si;
-        const pen = p.r - q.d;
-        if (q.ok && pen > 0 && pen < 40) {
-          p.x += q.nx * pen;
-          p.y += q.ny * pen;
-          // friction: damp tangential motion
-          const vx = p.x - p.px,
-            vy = p.y - p.py,
-            tx = -q.ny,
-            ty = q.nx,
-            vt = vx * tx + vy * ty;
-          p.px += tx * vt * 0.25;
-          p.py += ty * vt * 0.25;
-        }
-      }
-    }
-  }
-
-  function crash(spd) {
-    if (!B.alive) return;
-    B.alive = 0;
-    B.crashT = 0;
-    shake = Math.min(1.3, spd / 380 + 0.35);
-    spawnRagdoll();
-    emit(B.ch.x, B.ch.y, 18, 120, 1);
-    beep(48, 0.3, "sawtooth", 0.11);
-    if (engGain && AC) engGain.gain.setTargetAtTime(0, AC.currentTime, 0.05);
-  }
-
-  /* ================= planks (collapsing bridge) ================= */
-  function stepPlanks(h) {
-    for (let i = 1; i < TRACK.pl.length; i++) {
-      const p = TRACK.pl[i];
-      if (p.state === 1) {
-        p.fuse -= h;
-        if (p.fuse <= 0) {
-          p.state = 2;
-          const hinge = p.id % 2 === 0 ? p.x0 : p.x1;
-          const b = {
-            x: (p.x0 + p.x1) / 2,
-            y: p.y,
-            a: 0,
-            vx: (Math.random() - 0.5) * 18,
-            vy: 8,
-            w: (Math.random() - 0.5) * 1.2,
-            hx: hinge,
-            hy: p.y,
-            len: (p.x1 - p.x0) * 0.5,
-            hinged: 1,
-            snap: 0,
-          };
-          p.body = b;
-          B.planks.push(b);
-          emit(b.x, b.y, 6, 60, 0);
-          beep(70, 0.15, "square", 0.05);
-          shake = Math.max(shake, 0.2);
-        }
-      }
-    }
-    for (const b of B.planks) {
-      b.vy += G * h * 1.15;
-      b.x += b.vx * h;
-      b.y += b.vy * h;
-      b.a += b.w * h;
-      if (b.hinged) {
-        b.snap += h;
-        const dx = b.x - b.hx,
-          dy = b.y - b.hy,
-          d = hyp(dx, dy) || 1e-4;
-        const t = b.len / d;
-        b.x = b.hx + dx * t;
-        b.y = b.hy + dy * t;
-        const nx = dx / d,
-          ny = dy / d,
-          vt = b.vx * nx + b.vy * ny;
-        b.vx -= nx * (vt - (d - b.len) * 8);
-        b.vy -= ny * (vt - (d - b.len) * 8);
-        b.w += (nx * b.vy - ny * b.vx) * h * 0.04;
-        b.a = Math.atan2(b.y - b.hy, b.x - b.hx);
-        if (b.snap > 1.15 || b.y > b.hy + 90) b.hinged = 0;
-      }
-    }
-  }
-
-  /* ================= main simulation step ================= */
-  function slopeOf(c) {
-    if (!c || !c.on) return { st: 0, ct: 1, tx: 1, ty: 0, nx: 0, ny: -1 };
-    const nx = c.nx,
-      ny = c.ny,
-      tx = -ny,
-      ty = nx;
-    return { st: nx, ct: Math.max(Math.abs(ny), 1e-4), tx, ty, nx, ny };
-  }
-  function engineAndControls(h, c) {
-    const ch = B.ch,
-      fw = B.fw,
-      rw = B.rw;
-    ch.vy += G * h;
-    fw.vy += G * h;
-    rw.vy += G * h;
-    const sp = hyp(ch.vx, ch.vy),
-      fd = KD * sp * h * ch.im;
-    ch.vx -= ch.vx * fd;
-    ch.vy -= ch.vy * fd;
-    // overtorque meter: drains while engaged, recharges otherwise, never exceeds 100 %
-    if (c.ot && B.alive && !B.otLock && B.otT > 0) {
-      B.otOn = 1;
-      B.otT = Math.min(1, Math.max(0, B.otT - OT_DRAIN * h));
-      if (B.otT <= 0) {
-        B.otLock = 1;
-        B.otOn = 0;
-        B.otT = 0;
-      }
-    } else {
-      B.otOn = 0;
-      B.otT = Math.min(1, B.otT + OT_REGEN * h);
-      if (B.otLock && B.otT >= OT_MIN) B.otLock = 0;
-    }
-    const wrel = rw.w - ch.w,
-      mult = B.otOn ? OT_MULT : 1,
-      w0 = B.otOn ? W0_OT : W0;
-    const vf = ch.vx * Math.cos(ch.a) + ch.vy * Math.sin(ch.a);
-    const reversing = c.brk > 0 && c.thr <= 0 && vf < 24;
-    coasting = c.thr <= 0 && !reversing ? 1 : 0;
-    braking = c.brk > 0 && !reversing ? 1 : 0;
-    let tq = 0;
-    // pitch relative to the ground under the bike (used by traction control + wheelie governor)
-    let pr = 0;
-    {
-      const q =
-        CT[0].on && CT[0].jn > 0
-          ? CT[0]
-          : CT[1].on && CT[1].jn > 0
-            ? CT[1]
-            : null;
-      if (q) pr = wrapPI(ch.a - Math.asin(clamp(q.nx, -1, 1)));
-    }
-    const tcs = clamp(1 - (-pr - 0.35) / 0.4, 0, 1); // engine torque fades from 20deg, cut at 43deg nose-up
-    const airThr = B.air ? 0.35 : 1;
-    if (c.thr > 0)
-      tq = T0 * mult * c.thr * tcs * airThr * Math.max(0, 1 - wrel / w0);
-    else if (reversing) tq = -T0 * 0.45 * Math.max(0, 1 + wrel / (0.5 * W0));
-    if (tq) {
-      rw.w += rw.iI * tq * h;
-      ch.w -= ch.iI * tq * h;
-    }
-    const brake = (wh, tau) => {
-      if (tau <= 0) return;
-      const rel = wh.w - ch.w,
-        lim = tau * h,
-        imp = clamp(-rel / (wh.iI + ch.iI), -lim, lim);
-      wh.w += wh.iI * imp;
-      ch.w -= ch.iI * imp;
-    };
-    brake(rw, braking ? BRAKE_R + ROLL_RES : ROLL_RES);
-    brake(fw, braking ? BRAKE_F + ROLL_RES : ROLL_RES);
-    // slope: a = g*sin(theta) - mu*g*cos(theta). If |sin| > mu_s*|cos|, gravity wins.
-    if (coasting && B.alive) {
-      const spd = hyp(ch.vx, ch.vy);
-      for (const k of [0, 1]) {
-        const q = CT[k];
-        if (!(q.on && q.jn > 0)) continue;
-        const sl = slopeOf(q),
-          st = sl.st,
-          ct = sl.ct,
-          sgn = st >= 0 ? 1 : -1;
-        if (Math.abs(st) > MU_S * ct) {
-          const aT = G * (st - MU_K * ct * sgn);
-          const kicker = spd < 18 ? 1 : 0.28;
-          const imp = aT * h * kicker;
-          q.b.vx += sl.tx * imp;
-          q.b.vy += sl.ty * imp;
-          ch.vx += sl.tx * imp * 0.55;
-          ch.vy += sl.ty * imp * 0.55;
-        }
-      }
-    }
-    // wheelie / stoppie governor: the rider's weight brings the bike back before it can loop out
-    if (CT[0].on && CT[0].jn > 0 && !(CT[1].on && CT[1].jn > 0) && pr < -0.3)
-      ch.w += ch.iI * clamp((-pr - 0.3) * 160000, 0, 95000) * h;
-    else if (
-      CT[1].on &&
-      CT[1].jn > 0 &&
-      !(CT[0].on && CT[0].jn > 0) &&
-      pr > 0.4
-    )
-      ch.w -= ch.iI * clamp((pr - 0.4) * 160000, 0, 95000) * h;
-    // air assist: with no lean input the rider levels the bike with its flight path so it lands on its wheels
-    if (B.air && c.lean === 0 && B.alive) {
-      const spd = hyp(ch.vx, ch.vy);
-      if (spd > 60) {
-        const tv = clamp(Math.atan2(ch.vy, ch.vx), -0.9, 0.9),
-          e = wrapPI(tv - ch.a);
-        ch.w += ch.iI * clamp(16000 * e - 3000 * ch.w, -11000, 11000) * h;
-      }
-    }
-    // pitch control (rider weight shift / air control)
-    const air = B.air;
-    ch.w += ch.iI * c.lean * (air ? LEAN_AIR : LEAN_GND) * h;
-    ch.w *= 1 - (air ? AIR_DAMP : GND_ANG_DAMP) * h;
-    // preload / hop
-    if (c.hop && B.alive) B.hopT = Math.min(1, B.hopT + h * 2.4);
-    else if (B.hopT > 0.16) {
-      let nx = 0,
-        ny = -1,
-        n = 0;
-      for (const k of [0, 1]) {
-        const q = CT[k];
-        if (q.on && q.sep < 1.5) {
-          nx += q.nx;
-          ny += q.ny;
-          n++;
-        }
-      }
-      if (n) {
-        const l = hyp(nx, ny) || 1;
-        nx /= l;
-        ny /= l;
-      } else {
-        nx = 0;
-        ny = -1;
-      }
-      const kick = B.hopT * HOP_KICK * (n ? 1 : 0.25);
-      ch.vx += nx * kick;
-      ch.vy += ny * kick;
-      rw.vx += nx * kick * 0.4;
-      rw.vy += ny * kick * 0.4;
-      fw.vx += nx * kick * 0.4;
-      fw.vy += ny * kick * 0.4;
-      B.hopT = 0;
-      beep(150, 0.07, "sine", 0.05);
-    } else B.hopT = Math.max(0, B.hopT - h * 4);
-  }
-
-  function bindWheelSpin(wh, c, h) {
-    if (!(c && c.on && c.jn > 0)) return;
-    const tx = -c.ny,
-      ty = c.nx;
-    const vT = wh.vx * tx + wh.vy * ty;
-    const slip = vT - wh.w * WR;
-    if (coasting) {
-      wh.w = vT / WR;
-    } else {
-      const k = braking ? 0.55 : 0.28;
-      wh.w += (slip / WR) * k;
-    }
-  }
-  function physics(h, c) {
-    for (const b of [B.ch, B.fw, B.rw]) {
-      b.px = b.x;
-      b.py = b.y;
-      b.pa = b.a;
-    }
-    engineAndControls(h, c);
-    prepJoint(J.r, h);
-    prepJoint(J.f, h);
-    buildContacts();
-    if (coasting) {
-      bindWheelSpin(B.rw, CT[0], h);
-      bindWheelSpin(B.fw, CT[1], h);
-    }
-    warmJoint(J.r);
-    warmJoint(J.f);
-    warmContacts();
-    for (let it = 0; it < ITER; it++) {
-      solveJoint(J.r, h);
-      solveJoint(J.f, h);
-      solveContacts(h);
-    }
-    bindWheelSpin(B.rw, CT[0], h);
-    bindWheelSpin(B.fw, CT[1], h);
-    for (const b of [B.ch, B.fw, B.rw]) {
-      const sp = hyp(b.vx, b.vy);
-      if (sp > 1500) {
-        b.vx *= 1500 / sp;
-        b.vy *= 1500 / sp;
-      }
-      const wm = b === B.ch ? 26 : 140;
-      b.w = clamp(b.w, -wm, wm);
-      b.x += b.vx * h;
-      b.y += b.vy * h;
-      b.a += b.w * h;
-    }
-  }
-
-  function step(h) {
-    const c = B.alive ? inp : ZERO;
-    const wasAir = B.air;
-    physics(h, c);
-    stepParticles(h);
-    stepPlanks(h);
-    const ch = B.ch;
-    B.rc = CT[0].on && CT[0].jn > 0 ? 1 : 0;
-    B.fc = CT[1].on && CT[1].jn > 0 ? 1 : 0;
-    B.air = B.rc || B.fc ? 0 : 1;
-    if (!B.alive) {
-      stepRagdoll(h);
-      B.crashT += h;
-      return;
-    }
-    if (B.safe > 0) B.safe = Math.max(0, B.safe - h);
-    rider.update(h, c);
-    // ---- stuck detection: never leave the player in an impasse without telling them the way out ----
-    if (hyp(ch.vx, ch.vy) < 6 && !B.fin) {
-      B.stuckT += h;
-      if (B.stuckT > 4 && !B.stuckHint) {
-        B.stuckHint = 1;
-        toast("STUCK? PRESS R TO RETRY FROM CHECKPOINT");
-      }
-    } else {
-      B.stuckT = 0;
-      B.stuckHint = 0;
-    }
-    // ---- crash detection ----
-    let cr = 0;
-    const head = CT[2];
-    if (!B.safe) {
-      if (head.on && head.sep < 0.8) cr = 1;
-      for (let k = 3; k < 6; k++) {
-        const q = CT[k];
-        if (q.on && q.sep < 0.5 && q.vn0 < -300) cr = 1;
-      }
-      const bodyDown =
-        (CT[3].on && CT[3].sep < 0.5) ||
-        (CT[4].on && CT[4].sep < 0.5) ||
-        (CT[5].on && CT[5].sep < 0.5);
-      if (B.air && bodyDown && Math.cos(ch.a) < 0) B.invT += h;
-      else B.invT = 0;
-      if (B.invT > 0.5) cr = 1;
-    }
-    // landing feedback
-    if (!B.air && wasAir) {
-      const v = Math.max(Math.abs(CT[0].vn0), Math.abs(CT[1].vn0));
-      if (v > 90) {
-        shake = Math.max(shake, Math.min(0.6, v / 700));
-        if (v > 200) beep(88, 0.09, "triangle", 0.06);
-        emit(
-          B.rw.x,
-          B.rw.y + 8,
-          Math.min(10, (v / 40) | 0),
-          Math.min(120, v * 0.3),
-          0,
-        );
-      }
-      B.lastImpact = v;
-    }
-    // tyre dust / overtorque exhaust
-    const spd = hyp(ch.vx, ch.vy);
-    if (B.rc && spd > 40 && Math.random() < 0.2)
-      emit(B.rw.x, B.rw.y + 9, 1, 20 + spd * 0.04, 0);
-    if (
-      B.rc &&
-      Math.abs(
-        B.rw.w * WR - (B.rw.vx * Math.cos(ch.a) + B.rw.vy * Math.sin(ch.a)),
-      ) > 90 &&
-      Math.random() < 0.6
-    )
-      emit(B.rw.x, B.rw.y + 9, 1, 50, 0);
-    if (B.otOn) {
-      const ca = Math.cos(ch.a),
-        sa = Math.sin(ch.a);
-      const ex = B.rw.x + ca * -10 - sa * 2,
-        ey = B.rw.y + sa * -10 + ca * 2;
-      if (((simT * 90) | 0) !== (((simT - h) * 90) | 0))
-        emit(ex, ey, 2, 72, 1, -ca * 190, -sa * 190);
-      shake = Math.max(shake, 0.22 + 0.28 * (1 - B.otT));
-    }
-    // ---- hazards ----
-    for (const z of TRACK.haz) {
-      if (z.t === "cat") {
-        if (z.anim > 0) z.anim = Math.max(0, z.anim - h * 3);
-        if (!z.used) {
-          for (const k of [0, 1]) {
-            const q = CT[k],
-              wx = q.b.x;
-            if (q.on && q.jn > 0 && wx > z.x && wx < z.x + z.w) {
-              z.used = 1;
-              z.anim = 1;
-              for (const b of [B.ch, B.fw, B.rw]) {
-                b.vx += q.nx * z.power * 0.35 + 40;
-                b.vy += q.ny * z.power;
-              }
-              emit(z.x + z.w / 2, z.y, 8, 90, 0);
-              beep(210, 0.1, "sawtooth", 0.04);
-              shake = Math.max(shake, 0.35);
-              break;
-            }
-          }
-        } else if (ch.x > z.x + z.w + 320 || ch.x < z.x - 40) z.used = 0;
-      }
-    }
-    for (const k of [0, 1]) {
-      const q = CT[k];
-      if (q.on && q.jn > 0) {
-        const s = TRACK.seg[q.seg];
-        if (s > 0) {
-          const p = TRACK.pl[s];
-          if (p.state === 0) {
-            p.state = 1;
-            p.fuse = FUSE;
-          }
-        }
-      }
-    }
-    // ---- checkpoints & finish ----
-    const cps = TRACK.cps;
-    if (B.cp + 1 < cps.length && ch.x > cps[B.cp + 1].x) {
-      B.cp++;
-      B.cpTime = simT;
-      toast("CHECKPOINT");
-      beep(520, 0.09, "sine", 0.05);
-    }
-    if (ch.x > TRACK.fin && !B.fin) {
-      B.fin = 1;
-      running = 2;
-      const t = simT;
-      if (!best || t < best) {
-        best = t;
-        try {
-          localStorage.setItem("tod_best", "" + best);
-        } catch (e) {}
-      }
-      beep(440, 0.14, "sine", 0.07);
-      beep(660, 0.18, "sine", 0.05);
-      showMsg(
-        "CLEAR",
-        "Time " + t.toFixed(2) + "s   Best " + best.toFixed(2) + "s",
-        "RUN AGAIN",
-        0,
-      );
-    }
-    if (
-      cr ||
-      ch.y > TRACK.deathY ||
-      !Number.isFinite(ch.x) ||
-      !Number.isFinite(ch.y)
-    )
-      crash(spd);
-  }
-
-  function settleBike() {
-    // let the suspension sag under the bike's own weight before the run starts, so it never rolls or bounces on spawn
-    const saveInp = Object.assign({}, inp);
-    for (let i = 0; i < 360; i++) {
-      physics(DT, ZERO);
-    }
-    for (const b of [B.ch, B.fw, B.rw]) {
-      b.vx = b.vy = b.w = 0;
-      b.px = b.x;
-      b.py = b.y;
-      b.pa = b.a;
-    }
-    for (const j of [J.f, J.r]) {
-      j.jSpring = j.jPerp = j.jLo = j.jHi = 0;
-    }
-    for (const c of CT) {
-      c.jn = c.jt = 0;
-    }
-    B.safe = 0.6;
-    rider.reset();
-    cam.x = B.ch.x;
-    cam.y = B.ch.y - 36;
-  }
-
-  /* ================= UI helpers ================= */
+  /* ---------- events ---------- */
   let toastT = 0;
-  function toast(t) {
-    const e = $("toast");
-    if (!e) return;
-    e.textContent = t;
-    e.style.opacity = "1";
-    toastT = e.textContent.length > 14 ? 3.2 : 1.4;
+  function toast(s) {
+    const t = $("toast");
+    t.textContent = s;
+    t.style.opacity = 1;
+    toastT = 1.4;
   }
-  function showMsg(title, sub, b1, b2) {
-    const m = $("msg");
-    m.style.display = "flex";
-    m.querySelector("h1").textContent = title;
-    const ps = m.querySelectorAll("p");
-    ps[ps.length - 1].textContent = sub;
-    $("go").textContent = b1;
-    const g2 = $("go2");
-    if (g2) {
-      g2.style.display = b2 ? "inline-block" : "none";
-      if (b2) g2.textContent = b2;
-    }
+  function onEv(t, x, y, v) {
+    if (t === "coin") {
+      emit(3, x, y, 6, 90);
+      blip(v > 1 ? 1100 : 880, 0.12);
+    } else if (t === "fuel") {
+      emit(3, x, y, 12, 120);
+      blip(500, 0.15);
+      blip(750, 0.2);
+      toast("FUEL +");
+    } else if (t === "land") {
+      emit(0, x, y + 8, 6, 60 + v * 0.15, 0, -30);
+      shake = Math.max(shake, Math.min(6, v / 120));
+    } else if (t === "thud") emit(4, x, y, 5, 80 + v * 0.1);
+    else if (t === "flip") toast("FLIP x" + v + "  +" + 10 * v);
+    else if (t === "mile")
+      toast(sim.milestone * 500 + "m  BONUS +" + 25 * sim.milestone);
+    else if (t === "hop") {
+      emit(0, x, y + 10, 4 + v * 8, 40 + v * 50, 0, -80);
+      shake = Math.max(shake, 1.5 * v);
+      blip(180 + v * 80, 0.08);
+    } else if (t === "crash") {
+      emit(4, x, y, 30, 220);
+      shake = 10;
+      blip(90, 0.5, "sawtooth");
+    } else if (t === "over") endRun();
   }
-  function hideMsg() {
-    $("msg").style.display = "none";
-  }
-
-  /* ================= rendering ================= */
-  function drawBG() {
-    const g = X.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, "#0B1220");
-    g.addColorStop(0.55, "#132033");
-    g.addColorStop(1, "#0F172A");
-    X.fillStyle = g;
-    X.fillRect(0, 0, W, H);
-    // parallax ridges
-    for (let l = 0; l < 3; l++) {
-      const f = 0.06 + l * 0.07,
-        base = H * (0.62 + l * 0.09),
-        amp = 26 + l * 14;
-      X.fillStyle =
-        l === 0
-          ? "rgba(56,189,248,.06)"
-          : l === 1
-            ? "rgba(56,189,248,.09)"
-            : "rgba(34,197,94,.07)";
-      X.beginPath();
-      X.moveTo(0, H);
-      for (let x = 0; x <= W; x += 20) {
-        const wx = x / cam.z + cam.x * f * 0 + cam.x * f * 1.0;
-        X.lineTo(
-          x,
-          base -
-            Math.sin(wx * 0.006 + l * 2) * amp -
-            Math.sin(wx * 0.017 + l) * amp * 0.35,
-        );
-      }
-      X.lineTo(W, H);
-      X.closePath();
-      X.fill();
+  /* ---------- input ---------- */
+  const GK = {
+    KeyW: "thr",
+    ArrowUp: "thr",
+    KeyS: "brk",
+    ArrowDown: "brk",
+    KeyA: "L",
+    ArrowLeft: "L",
+    KeyD: "R",
+    ArrowRight: "R",
+    ShiftLeft: "nit",
+    ShiftRight: "nit",
+    Space: "hop",
+  };
+  addEventListener("keydown", (e) => {
+    const g = GK[e.code];
+    if (g) {
+      keys[g] = 1;
+      e.preventDefault();
+      audio();
     }
-  }
-  function trackPath(x0, x1) {
-    const PX = TRACK.x,
-      PY = TRACK.y,
-      ns = TRACK.n - 1;
-    let pen = false;
-    X.beginPath();
-    for (let i = 0; i < ns; i++) {
-      const xa = PX[i],
-        xb = PX[i + 1];
-      if (Math.max(xa, xb) < x0 || Math.min(xa, xb) > x1) {
-        pen = false;
-        continue;
-      }
-      if (!segSolid(i)) {
-        pen = false;
-        continue;
-      }
-      if (!pen) {
-        X.moveTo(PX[i], PY[i]);
-        pen = true;
-      }
-      X.lineTo(PX[i + 1], PY[i + 1]);
-    }
-  }
-  function drawTerrain(x0, x1, tnow) {
-    X.lineJoin = "round";
-    X.lineCap = "round";
-    // chasms under gaps / bridge
-    for (let i = 0; i < TRACK.n - 1; i++) {
-      if (
-        TRACK.seg[i] === -1 &&
-        Math.max(TRACK.x[i], TRACK.x[i + 1]) > x0 &&
-        Math.min(TRACK.x[i], TRACK.x[i + 1]) < x1
-      ) {
-        const ax = TRACK.x[i],
-          ay = TRACK.y[i],
-          bx = TRACK.x[i + 1],
-          by = TRACK.y[i + 1];
-        const g = X.createLinearGradient(0, Math.min(ay, by), 0, TRACK.deathY);
-        g.addColorStop(0, "#050a14");
-        g.addColorStop(1, "#0B1220");
-        X.fillStyle = g;
-        X.fillRect(
-          ax,
-          Math.min(ay, by) + 2,
-          bx - ax,
-          TRACK.deathY - Math.min(ay, by),
-        );
-      }
-    }
-    for (const z of TRACK.haz) {
-      if (z.t === "bridge" && z.x < x1 && z.x + z.w > x0) {
-        const g = X.createLinearGradient(0, z.y, 0, TRACK.deathY);
-        g.addColorStop(0, "#050a14");
-        g.addColorStop(1, "#0B1220");
-        X.fillStyle = g;
-        X.fillRect(z.x, z.y + 3, z.w, TRACK.deathY - z.y);
-      }
-    }
-    trackPath(x0, x1);
-    X.strokeStyle = "#16332c";
-    X.lineWidth = 52;
-    X.stroke();
-    X.strokeStyle = "#1d4a3c";
-    X.lineWidth = 40;
-    X.stroke();
-    X.strokeStyle = "#22C55E";
-    X.lineWidth = 3;
-    X.stroke();
-    // planks
-    for (let i = 1; i < TRACK.pl.length; i++) {
-      const p = TRACK.pl[i];
-      if (p.x1 < x0 || p.x0 > x1) continue;
-      if (p.state < 2) {
-        const sag =
-          p.state === 1
-            ? Math.sin((FUSE - p.fuse) * 22 + p.seed * 6) * 1.2 +
-              ((FUSE - p.fuse) / FUSE) * 4
-            : 0;
-        X.fillStyle = p.state === 1 ? "#B45309" : "#92400E";
-        X.fillRect(p.x0 + 0.6, p.y - 4 + sag, p.x1 - p.x0 - 1.2, 8);
-        X.fillStyle = "#F59E0B";
-        X.fillRect(p.x0 + 0.6, p.y - 4 + sag, p.x1 - p.x0 - 1.2, 1.6);
-        X.fillStyle = "#451A03";
-        X.fillRect(p.x0 + 2, p.y + sag, 2, 2);
-        X.fillRect(p.x1 - 4, p.y + sag, 2, 2);
-      }
-    }
-    for (const b of B.planks) {
-      X.save();
-      X.translate(b.x, b.y);
-      X.rotate(b.a);
-      X.fillStyle = "#92400E";
-      X.fillRect(-15, -4, 30, 8);
-      X.fillStyle = "#F59E0B";
-      X.fillRect(-15, -4, 30, 1.6);
-      X.restore();
-    }
-    // bridge rails
-    for (const z of TRACK.haz) {
-      if (z.t === "bridge" && z.x < x1 && z.x + z.w > x0) {
-        X.fillStyle = "#78350F";
-        X.fillRect(z.x - 4, z.y - 22, 5, 26);
-        X.fillRect(z.x + z.w - 1, z.y - 22, 5, 26);
-      }
-      if (z.t === "cat" && z.x < x1 && z.x + z.w > x0) {
-        const k = z.anim,
-          lift = k * 9;
-        X.fillStyle = "#78350F";
-        X.fillRect(z.x, z.y - 3, z.w, 3);
-        X.fillStyle = "#F59E0B";
-        X.fillRect(z.x + 3, z.y - 6 - lift, z.w - 6, 4);
-        X.fillStyle = "#DC2626";
-        for (let q = 0; q < 3; q++) {
-          const cx = z.x + z.w * (0.2 + q * 0.3);
-          X.beginPath();
-          X.moveTo(cx, z.y - 16 - lift);
-          X.lineTo(cx - 6, z.y - 7 - lift);
-          X.lineTo(cx + 6, z.y - 7 - lift);
-          X.fill();
-        }
-      }
-    }
-    // checkpoints & finish
-    for (let i = 0; i < TRACK.cps.length; i++) {
-      const c = TRACK.cps[i];
-      if (c.x < x0 || c.x > x1) continue;
-      const on = i <= B.cp;
-      X.strokeStyle = "#94A3B8";
-      X.lineWidth = 2;
-      X.beginPath();
-      X.moveTo(c.x, c.y);
-      X.lineTo(c.x, c.y - 46);
-      X.stroke();
-      X.fillStyle = on ? "#22C55E" : "#64748B";
-      X.beginPath();
-      X.moveTo(c.x, c.y - 46);
-      X.lineTo(c.x + 22, c.y - 40 + Math.sin(tnow * 4 + i) * 1.5);
-      X.lineTo(c.x, c.y - 32);
-      X.fill();
-    }
-    const fy = TRACK.y[TRACK.n - 1];
-    const fg = groundAt(TRACK.fin, fy).y;
-    if (TRACK.fin > x0 && TRACK.fin < x1) {
-      X.fillStyle = "#38BDF8";
-      X.fillRect(TRACK.fin, fg - 78, 5, 78);
-      X.fillRect(TRACK.fin + 56, fg - 78, 5, 78);
-      for (let q = 0; q < 8; q++)
-        for (let r = 0; r < 2; r++) {
-          X.fillStyle = (q + r) % 2 ? "#0F172A" : "#E2E8F0";
-          X.fillRect(TRACK.fin + 5 + q * 6.4, fg - 78 + r * 6, 6.4, 6);
-        }
-    }
-  }
-  const ip = (b, k) => ({
-    x: b.px + (b.x - b.px) * k,
-    y: b.py + (b.y - b.py) * k,
-    a: b.pa + (b.a - b.pa) * k,
+    if (e.repeat) return;
+    if (e.code === "Escape" || e.code === "KeyP") {
+      state === "run" ? pause() : state === "pause" && resume();
+    } else if (e.code === "KeyR" && (state === "run" || state === "over"))
+      start();
+    else if (e.code === "Enter" && (state === "menu" || state === "over"))
+      start();
   });
-  function wheelGfx(lx, ly, wa, ca, col, blur) {
-    X.save();
-    X.translate(lx, ly);
-    X.rotate(wa - ca);
-    X.beginPath();
-    X.arc(0, 0, WR - 1.5, 0, TAU);
-    X.strokeStyle = "#0a0f1a";
-    X.lineWidth = 4.4;
-    X.stroke();
-    X.beginPath();
-    X.arc(0, 0, WR - 0.2, 0, TAU);
-    X.strokeStyle = "#475569";
-    X.lineWidth = 0.9;
-    X.stroke();
-    X.beginPath();
-    X.arc(0, 0, WR - 5, 0, TAU);
-    X.strokeStyle = col;
-    X.lineWidth = 1.6;
-    X.stroke();
-    if (blur) {
-      X.fillStyle = "rgba(148,163,184,.22)";
-      X.beginPath();
-      X.arc(0, 0, WR - 5, 0, TAU);
-      X.fill();
-      X.strokeStyle = "rgba(226,232,240,.5)";
-      X.lineWidth = 1.2;
-      X.beginPath();
-      X.arc(0, 0, WR - 7, 0.3, 2.4);
-      X.stroke();
-    } else {
-      X.strokeStyle = "#94A3B8";
-      X.lineWidth = 1.2;
-      X.beginPath();
-      for (let i = 0; i < 5; i++) {
-        const a = (i * TAU) / 5;
-        X.moveTo(0, 0);
-        X.lineTo(Math.cos(a) * (WR - 5), Math.sin(a) * (WR - 5));
-      }
-      X.stroke();
-    }
-    X.fillStyle = "#DC2626";
-    X.beginPath();
-    X.arc(WR - 3.4, 0, 1.5, 0, TAU);
-    X.fill(); // valve: rotation reference
-    X.fillStyle = "#64748B";
-    X.beginPath();
-    X.arc(0, 0, 2, 0, TAU);
-    X.fill();
-    X.restore();
+  addEventListener("keyup", (e) => {
+    const g = GK[e.code];
+    if (g) keys[g] = 0;
+  });
+  addEventListener("blur", () => {
+    for (const q in keys) keys[q] = 0;
+    for (const q in tch) tch[q] = 0;
+    if (state === "run") pause();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && state === "run") pause();
+  });
+  ["gesturestart", "contextmenu", "dblclick"].forEach((n) =>
+    document.addEventListener(n, (e) => e.preventDefault()),
+  );
+  document.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!e.target.closest("#msg")) e.preventDefault();
+    },
+    { passive: false },
+  );
+  function setTouch() {
+    document.body.classList.add("touch");
   }
-  function limb(pts, w, col) {
-    X.strokeStyle = col;
-    X.lineWidth = w;
-    X.lineCap = "round";
-    X.lineJoin = "round";
-    X.beginPath();
-    X.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) X.lineTo(pts[i][0], pts[i][1]);
-    X.stroke();
-  }
-  function drawBike(k) {
-    const c = ip(B.ch, k),
-      f = ip(B.fw, k),
-      r = ip(B.rw, k);
-    const ca = Math.cos(c.a),
-      sa = Math.sin(c.a);
-    const loc = (w) => [
-      (w.x - c.x) * ca + (w.y - c.y) * sa,
-      -(w.x - c.x) * sa + (w.y - c.y) * ca,
-    ];
-    const fl = loc(f),
-      rl = loc(r);
-    // rider was drawn from local coords -> everything below is in chassis space
-    const drawRiderFar = () => {
-      if (!B.alive) return;
-      limb([rider.P, rider.KN2, rider.FT2], 4, "#1E3A8A");
-      limb(
-        [
-          [rider.FT2[0], rider.FT2[1]],
-          [rider.FT2[0] + 3.5, rider.FT2[1] + 0.5],
-        ],
-        3.4,
-        "#0F172A",
-      );
-      limb(
-        [rider.Cst, rider.EL2, [GRIP[0] - 1.5, GRIP[1] + 1]],
-        3.2,
-        "#7F1D1D",
-      );
-    };
-    const drawRiderNear = () => {
-      if (!B.alive) return;
-      limb([rider.P, rider.KN, rider.FT], 4.4, "#1D4ED8");
-      limb(
-        [
-          [rider.FT[0] - 1, rider.FT[1]],
-          [rider.FT[0] + 4, rider.FT[1] + 0.5],
-        ],
-        3.6,
-        "#0F172A",
-      );
-      limb([rider.P, rider.Cst], 5.6, "#DC2626");
-      limb([rider.Cst, rider.EL, GRIP], 3.6, "#EF4444");
-      X.fillStyle = "#F8FAFC";
-      X.beginPath();
-      X.arc(GRIP[0], GRIP[1], 2, 0, TAU);
-      X.fill();
-      const hx = rider.H[0],
-        hy = rider.H[1];
-      X.fillStyle = "#F8FAFC";
-      X.beginPath();
-      X.arc(hx, hy, 5.4, 0, TAU);
-      X.fill();
-      X.fillStyle = "#0F172A";
-      X.beginPath();
-      X.arc(hx + 2.6, hy + 0.4, 3, -0.9, 1.3);
-      X.fill();
-      X.fillStyle = "#DC2626";
-      X.fillRect(hx - 5.4, hy - 1.2, 4, 1.6);
-    };
-    X.save();
-    X.translate(c.x, c.y);
-    X.rotate(c.a);
-    const wa1 = r.a,
-      wa2 = f.a,
-      blur1 = Math.abs(B.rw.w) > 26,
-      blur2 = Math.abs(B.fw.w) > 26;
-    // swingarm + shock
-    const piv = [-7, 8];
-    limb([piv, rl], 4, "#475569");
-    const mid = [
-      piv[0] + (rl[0] - piv[0]) * 0.6,
-      piv[1] + (rl[1] - piv[1]) * 0.6 - 2,
-    ];
-    X.strokeStyle = "#F59E0B";
-    X.lineWidth = 2;
-    X.beginPath();
-    X.moveTo(-13, -4);
-    {
-      const dx = mid[0] + 13,
-        dy = mid[1] + 4,
-        L = hyp(dx, dy),
-        n = 7;
-      for (let i = 1; i <= n; i++) {
-        const t = i / n,
-          px = -13 + dx * t,
-          py = -4 + dy * t,
-          s = (i % 2 ? 1 : -1) * 3;
-        X.lineTo(px - (dy / L) * s, py + (dx / L) * s);
-      }
-    }
-    X.stroke();
-    wheelGfx(rl[0], rl[1], wa1, c.a, B.otOn ? "#F97316" : "#CBD5E1", blur1);
-    drawRiderFar();
-    // exhaust
-    X.strokeStyle = "#94A3B8";
-    X.lineWidth = 3;
-    X.beginPath();
-    X.moveTo(4, 11);
-    X.quadraticCurveTo(-8, 14, -24, 7);
-    X.stroke();
-    X.fillStyle = "#CBD5E1";
-    X.fillRect(-28, 3, 10, 5);
-    // engine block
-    X.fillStyle = "#334155";
-    X.fillRect(-7, -1, 17, 13);
-    X.fillStyle = "#475569";
-    X.fillRect(-4, -5, 10, 5);
-    X.fillStyle = "#1E293B";
-    X.fillRect(-5, 4, 13, 2);
-    // frame tube
-    limb(
-      [
-        [-14, 3],
-        [-9, -7],
-        [12, -11],
-        [13, 2],
-      ],
-      2.4,
-      "#64748B",
+  let reducedMotion = matchMedia("(prefers-reduced-motion:reduce)").matches;
+  try {
+    matchMedia("(prefers-reduced-motion:reduce)").addEventListener(
+      "change",
+      (e) => {
+        reducedMotion = e.matches;
+      },
     );
-    // seat + tank + tail
-    X.fillStyle = "#0F172A";
-    X.beginPath();
-    X.moveTo(-23, -9);
-    X.lineTo(-6, -8);
-    X.lineTo(-5, -5);
-    X.lineTo(-22, -5);
-    X.closePath();
-    X.fill();
-    X.fillStyle = "#DC2626";
-    X.beginPath();
-    X.moveTo(-6, -10);
-    X.lineTo(11, -13);
-    X.lineTo(16, -7);
-    X.lineTo(6, -3);
-    X.lineTo(-7, -4);
-    X.closePath();
-    X.fill();
-    X.fillStyle = "#F87171";
-    X.fillRect(-3, -11, 10, 1.5);
-    X.fillStyle = "#DC2626";
-    X.beginPath();
-    X.moveTo(-28, -8);
-    X.lineTo(-22, -10);
-    X.lineTo(-22, -5);
-    X.closePath();
-    X.fill();
-    // front fork (telescopes with real suspension travel) + bars
-    const T0 = [6.6, -10.5],
-      ax = Math.sin(FORK_A),
-      ay = Math.cos(FORK_A);
-    limb([T0, fl], 3, "#CBD5E1");
-    limb([[fl[0] - ax * 15, fl[1] - ay * 15], fl], 5, "#334155");
-    limb([[T0[0] - 2, T0[1] - 2], [13, -16], GRIP], 2.6, "#94A3B8");
-    X.fillStyle = "#FDE68A";
-    X.fillRect(15, -11, 4, 4);
-    drawRiderNear();
-    wheelGfx(fl[0], fl[1], wa2, c.a, "#94A3B8", blur2);
-    X.restore();
-  }
-  function drawRagdoll() {
-    const rg = B.ragdoll;
-    if (!rg) return;
-    const seg = (a, b, w, col) => {
-      X.strokeStyle = col;
-      X.lineWidth = w;
-      X.lineCap = "round";
-      X.beginPath();
-      X.moveTo(rg[a].x, rg[a].y);
-      X.lineTo(rg[b].x, rg[b].y);
-      X.stroke();
+  } catch (e) {}
+  if (
+    "ontouchstart" in window ||
+    navigator.maxTouchPoints > 0 ||
+    matchMedia("(pointer:coarse)").matches
+  )
+    setTouch();
+  addEventListener(
+    "pointerdown",
+    (e) => {
+      if (e.pointerType === "touch") setTouch();
+      audio();
+    },
+    { passive: true },
+  );
+  document.querySelectorAll("#touch button").forEach((b) => {
+    const key = b.dataset.k,
+      ids = new Set(),
+      sync = () => {
+        tch[key] = ids.size ? 1 : 0;
+        b.classList.toggle("on", !!ids.size);
+      };
+    b.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      try {
+        b.setPointerCapture(e.pointerId);
+      } catch (x) {}
+      ids.add(e.pointerId);
+      sync();
+    });
+    const up = (e) => {
+      ids.delete(e.pointerId);
+      sync();
     };
-    seg(1, 2, 5.6, "#DC2626");
-    seg(1, 3, 3.4, "#EF4444");
-    seg(3, 4, 3.4, "#EF4444");
-    seg(1, 5, 3.4, "#EF4444");
-    seg(5, 6, 3.4, "#EF4444");
-    seg(2, 7, 4.4, "#1D4ED8");
-    seg(7, 8, 4.4, "#1D4ED8");
-    seg(2, 9, 4.4, "#1D4ED8");
-    seg(9, 10, 4.4, "#1D4ED8");
-    seg(0, 1, 3, "#F8FAFC");
-    X.fillStyle = "#F8FAFC";
-    X.beginPath();
-    X.arc(rg[0].x, rg[0].y, 5.4, 0, TAU);
-    X.fill();
-    X.fillStyle = "#DC2626";
-    X.beginPath();
-    X.arc(rg[0].x + 2, rg[0].y - 1, 1.8, 0, TAU);
-    X.fill();
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) =>
+      b.addEventListener(n, up),
+    );
+    b.addEventListener("contextmenu", (e) => e.preventDefault());
+  });
+  function readInput() {
+    const t = state === "run";
+    inp.thr = t && (keys.thr || tch.G) ? 1 : 0;
+    inp.brk = t && (keys.brk || tch.B) ? 1 : 0;
+    inp.nit = t && (keys.nit || tch.N) ? 1 : 0;
+    inp.hop = t && (keys.hop || tch.H) ? 1 : 0;
+    inp.lean = t ? (keys.R || tch.R ? 1 : 0) - (keys.L || tch.L ? 1 : 0) : 0;
   }
-  function drawDust() {
-    for (const p of dust) {
-      if (p.a <= 0) continue;
-      X.globalAlpha = Math.max(0, p.a) * (p.c ? 0.6 : 0.4);
-      X.fillStyle = p.c
-        ? p.a > 0.55
-          ? "#FBBF24"
-          : p.a > 0.3
-            ? "#F97316"
-            : "#64748B"
-        : "#94A3B8";
-      X.beginPath();
-      X.arc(p.x, p.y, p.s, 0, TAU);
-      X.fill();
-    }
-    X.globalAlpha = 1;
-  }
-  function resize() {
-    DPR = Math.min(2, window.devicePixelRatio || 1);
-    W = C.clientWidth || window.innerWidth;
-    H = C.clientHeight || window.innerHeight;
-    C.width = (W * DPR) | 0;
-    C.height = (H * DPR) | 0;
-    X.setTransform(DPR, 0, 0, DPR, 0, 0);
-  }
-  function hud() {
-    const sp = hyp(B.ch.vx, B.ch.vy) * 0.107;
-    $("spd").textContent = sp.toFixed(0);
-    $("dst").textContent = Math.max(0, (B.ch.x / 10) | 0);
-    $("tim").textContent = simT.toFixed(2);
-    $("bst").textContent = best ? best.toFixed(2) : "--";
-    const otPct = Math.min(clamp(B.otT, 0, 1) * 100, 100),
-      ready = otPct >= 99.5;
-    $("bthr").style.width = clamp(inp.thr, 0, 1) * 100 + "%";
-    $("bot").style.width = otPct + "%";
-    $("bhop").style.width = clamp(B.hopT, 0, 1) * 100 + "%";
-    $("bot").parentNode.classList.toggle("ready", ready);
-    const otl = $("otl");
-    if (otl) {
-      otl.classList.toggle("ready", ready);
-      otl.textContent = B.otLock
-        ? "OT RECHARGING"
-        : ready
-          ? "OT READY"
-          : "Overtorque";
-    }
-  }
-
-  /* ================= main loop ================= */
-  let lastNow = 0;
-  function frame(now) {
-    requestAnimationFrame(frame);
-    if (!lastNow) lastNow = now;
-    let dt = Math.min(0.05, Math.max(0, (now - lastNow) / 1000));
-    lastNow = now;
-    readInput();
-    if (running === 1) {
-      acc += dt;
-      let n = 0;
-      while (acc >= DT && n < MAXSTEPS) {
-        step(DT);
-        acc -= DT;
-        n++;
-        if (B.alive && !B.fin) simT += DT;
-      }
-      if (n === MAXSTEPS) acc = 0;
-      if (!B.alive && B.crashT > 0.9 && $("msg").style.display !== "flex")
-        showMsg(
-          "DOWN",
-          "Physics won this round. Restart from the last checkpoint, or start over.",
-          "RETRY",
-          "RESTART",
-        );
-    } else if (running === 2 || running === 0 || running === 3) {
-      stepParticles(dt);
-      if (!B.alive) stepRagdoll(dt);
-    }
-    alpha = running === 1 ? acc / DT : 1;
-    const ch = ip(B.ch, alpha),
-      spd = hyp(B.ch.vx, B.ch.vy);
-    const base = clamp(Math.min(W / 760, H / 440), 0.55, 1.5);
-    const tz =
-      base * clamp(1.06 - spd * 0.00034 - (B.otOn ? 0.22 : 0), 0.58, 1.12);
-    const lookX = clamp(B.ch.vx * 0.28, -170, 170);
-    const kx = 1 - Math.exp(-dt * 5.5),
-      kz = 1 - Math.exp(-dt * 2.2);
-    cam.x += (ch.x + lookX - cam.x) * kx;
-    cam.y += (ch.y - 30 - cam.y) * kx;
-    cam.z += (tz - cam.z) * kz;
-    shake *= Math.exp(-dt * 9);
-    const sx = (Math.random() - 0.5) * shake * 12,
-      sy = (Math.random() - 0.5) * shake * 9;
-    X.setTransform(DPR, 0, 0, DPR, 0, 0);
-    drawBG();
-    X.save();
-    X.translate(W * 0.42 + sx, H * 0.58 + sy);
-    X.scale(cam.z, cam.z);
-    X.translate(-cam.x, -cam.y);
-    const vw = W / cam.z;
-    drawTerrain(cam.x - vw * 0.55 - 120, cam.x + vw * 0.7 + 120, now / 1000);
-    drawDust();
-    if (B.alive) drawBike(alpha);
-    else {
-      drawBike(alpha);
-      drawRagdoll();
-    }
-    X.restore();
-    if (toastT > 0) {
-      toastT -= dt;
-      if (toastT <= 0) {
-        const e = $("toast");
-        if (e) e.style.opacity = "0";
-      }
-    }
-    if (engGain && AC) {
-      if (running === 1 && B.alive) {
-        engF = lerp(engF, 60 + Math.abs(B.rw.w) * 3.2 + inp.thr * 30, 0.15);
-        engOsc.frequency.setTargetAtTime(engF, AC.currentTime, 0.05);
-        engGain.gain.setTargetAtTime(
-          0.02 + inp.thr * 0.045,
-          AC.currentTime,
-          0.08,
-        );
-      } else engGain.gain.setTargetAtTime(0, AC.currentTime, 0.06);
-    }
-    hud();
-    if (inp.retry) {
-      inp.retry = 0;
-      if (running !== 0) startRun(B.alive && running === 1 ? "cp" : "cp");
-    }
-  }
-
-  /* ================= game flow ================= */
-  function startRun(mode) {
-    // mode: 'cp' retry from last checkpoint, 'full' restart, undefined = resume/continue
-    if (running === 3 && !mode) {
-      running = 1;
-      hideMsg();
-      if (AC && AC.state === "suspended") AC.resume();
-      return;
-    }
-    const keepTime = mode === "cp" && B.cp > 0 && running !== 2;
-    const cpi =
-      mode === "full" || running === 2 || mode === undefined ? 0 : B.cp;
-    const tSave = keepTime ? B.cpTime : 0;
-    resetBike(cpi);
-    running = 1;
-    simT = tSave;
-    B.cpTime = tSave;
-    acc = 0;
-    inp.hop = 0;
-    inp.ot = 0;
-    inp.retry = 0;
-    hideMsg();
-    audioInit();
-    if (AC && AC.state === "suspended") AC.resume();
+  /* ---------- UI / menus ---------- */
+  const box = $("box"),
+    msg = $("msg");
+  const playUI = () => {
+    const on = state === "run";
+    document.body.classList.toggle("playing", on);
+    $("touch").setAttribute("aria-hidden", on ? "false" : "true");
+    $("pb").setAttribute("aria-label", on ? "Pause" : "Resume");
+  };
+  const show = (h) => {
+    box.innerHTML = h;
+    msg.classList.add("on");
+    playUI();
+  };
+  const hide = () => {
+    msg.classList.remove("on");
+    playUI();
+  };
+  const bn = () => S.BIOMES[sim.bi].name;
+  const HINT =
+    '<p class="t kb"><b>W/&#8593;</b> gas &nbsp;<b>S/&#8595;</b> brake/reverse &nbsp;<b>A/D or &#8592;/&#8594;</b> tilt &nbsp;<b>SHIFT</b> nitro &nbsp;<b>SPACE</b> hop &nbsp;<b>ESC</b> pause &nbsp;<b>R</b> restart</p>';
+  function menu() {
+    state = "menu";
+    show(
+      '<h1>TORQUE OVERDRIVE</h1><p class="t">Endless procedural hill climb. Collect coins &amp; fuel, upgrade, go further.</p>' +
+        HINT +
+        '<p class="t">Best: <b>' +
+        Math.floor(save.best) +
+        "m</b> &nbsp; Coins: <b>" +
+        save.coins +
+        '</b></p><button class="btn" data-a="start">DRIVE</button><button class="btn g" data-a="garage">GARAGE</button>',
+    );
   }
   function pause() {
-    if (running !== 1) return;
-    running = 3;
-    if (engGain && AC) engGain.gain.setTargetAtTime(0, AC.currentTime, 0.05);
-    showMsg("PAUSED", "Enter or ENGAGE to resume", "ENGAGE", 0);
-  }
-  function readInput() {
-    inp.thr = keys.KeyW || keys.ArrowUp || touch.thr ? 1 : 0;
-    inp.brk = keys.KeyS || keys.ArrowDown || touch.brk ? 1 : 0;
-    inp.lean =
-      (touch.leanR || keys.KeyD || keys.ArrowRight ? 1 : 0) -
-      (touch.leanL || keys.KeyA || keys.ArrowLeft ? 1 : 0);
-    inp.hop = (keys.Space && !hopLock) || touch.hop ? 1 : 0;
-    inp.ot = keys.ShiftLeft || keys.ShiftRight || touch.ot ? 1 : 0;
-    if (touch.retry) {
-      inp.retry = 1;
-      touch.retry = 0;
-    }
-    const gps = navigator.getGamepads && navigator.getGamepads();
-    const gp = gps && gps[0];
-    if (gp) {
-      const ax = gp.axes[0] || 0,
-        ay = gp.axes[1] || 0;
-      if (Math.abs(ax) > 0.12) inp.lean = ax;
-      const rt = gp.buttons[7] ? gp.buttons[7].value : 0,
-        lt = gp.buttons[6] ? gp.buttons[6].value : 0;
-      inp.thr = Math.max(inp.thr, rt, ay < -0.2 ? -ay : 0);
-      inp.brk = Math.max(inp.brk, lt);
-      if (gp.buttons[0] && gp.buttons[0].pressed) inp.hop = 1;
-      if (gp.buttons[1] && gp.buttons[1].pressed) inp.ot = 1;
-      if (gp.buttons[9] && gp.buttons[9].pressed) inp.retry = 1;
-    }
-  }
-  function bind() {
-    const GAME_KEYS = [
-      "Space",
-      "ArrowUp",
-      "ArrowDown",
-      "ArrowLeft",
-      "ArrowRight",
-    ];
-    window.addEventListener(
-      "keydown",
-      (e) => {
-        if (GAME_KEYS.indexOf(e.code) >= 0) e.preventDefault();
-        keys[e.code] = 1;
-        if (e.code === "Space") {
-          if ($("msg").style.display !== "none") {
-            hopLock = 1;
-            startRun(running === 3 ? undefined : B.alive ? "full" : "cp");
-            return;
-          }
-          if (running === 1 && !hopLock) inp.hop = 1;
-          return;
-        }
-        if (e.code === "KeyR") inp.retry = 1;
-        if (e.code === "Enter" && running !== 1)
-          startRun(running === 3 ? undefined : B.alive ? "full" : "cp");
-        if (e.code === "Escape") pause();
-      },
-      { passive: false },
+    if (state !== "run") return;
+    state = "pause";
+    show(
+      '<h2>PAUSED</h2><p class="t">' +
+        bn() +
+        " &middot; seed " +
+        sim.seed +
+        " &middot; " +
+        Math.floor(sim.dist) +
+        'm</p><button class="btn" data-a="resume">RESUME</button><button class="btn g" data-a="garage">GARAGE / UPGRADES</button><button class="btn g" data-a="start">RESTART</button>',
     );
-    window.addEventListener("keyup", (e) => {
-      keys[e.code] = 0;
-      if (e.code === "Space") {
-        inp.hop = 0;
-        hopLock = 0;
-      }
-    });
-    window.addEventListener("blur", () => {
-      for (const k in keys) keys[k] = 0;
-      for (const k in touch) touch[k] = 0;
-      pause();
-    });
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) pause();
-    });
-    document.querySelectorAll("#touch button").forEach((b) => {
-      const k = b.dataset.k;
-      const on = (e) => {
-        e.preventDefault();
-        try {
-          b.setPointerCapture(e.pointerId);
-        } catch (_) {}
-        touch[k] = 1;
-        b.classList.add("on");
-      };
-      const off = () => {
-        touch[k] = 0;
-        b.classList.remove("on");
-      };
-      b.addEventListener("pointerdown", on);
-      b.addEventListener("pointerup", off);
-      b.addEventListener("pointercancel", off);
-      b.addEventListener("lostpointercapture", off);
-      b.addEventListener("contextmenu", (e) => e.preventDefault());
-    });
-    document.addEventListener("contextmenu", (e) => e.preventDefault());
-    $("go").onclick = () => {
-      const t = $("go").textContent;
-      if (t === "RETRY") startRun("cp");
-      else if (t === "RUN AGAIN") startRun("full");
-      else startRun(running === 3 ? undefined : "full");
-    };
-    const g2 = $("go2");
-    if (g2) g2.onclick = () => startRun("full");
-    window.addEventListener("resize", resize);
-    window.addEventListener("orientationchange", () => setTimeout(resize, 150));
-    if (window.visualViewport)
-      visualViewport.addEventListener("resize", resize);
   }
-
-  try {
-    const coarse =
-      window.matchMedia &&
-      (matchMedia("(pointer:coarse)").matches ||
-        matchMedia("(hover:none)").matches);
-    if (coarse || "ontouchstart" in window)
-      document.body.classList.add("touch");
-  } catch (e) {}
-  buildTrack();
-  resetBike(0);
+  function resume() {
+    state = "run";
+    hide();
+    last = performance.now();
+  }
+  function start() {
+    audio();
+    if (sim && !sim.banked && (state === "run" || state === "pause")) {
+      save.coins += sim.coins;
+      sim.banked = 1;
+      persist();
+    }
+    newRun(params.has("seed") && !start.used ? +params.get("seed") : null);
+    start.used = 1;
+    state = "run";
+    hide();
+    last = performance.now();
+    toast(bn().toUpperCase());
+  }
+  function endRun() {
+    state = "over";
+    save.coins += sim.coins;
+    const nb = sim.dist > save.best;
+    if (nb) save.best = sim.dist;
+    persist();
+    show(
+      '<h1 style="font-size:clamp(22px,5vw,40px)">' +
+        (sim.over === "out of fuel" ? "OUT OF FUEL" : "CRASHED") +
+        '</h1><p class="t">Distance <b>' +
+        Math.floor(sim.dist) +
+        "m</b>" +
+        (nb ? " &mdash; NEW BEST!" : "") +
+        " &middot; Coins <b>+" +
+        sim.coins +
+        "</b> (wallet " +
+        save.coins +
+        ")<br>" +
+        bn() +
+        " &middot; seed " +
+        sim.seed +
+        '</p><button class="btn" data-a="start">RETRY</button><button class="btn g" data-a="garage">GARAGE</button>',
+    );
+    sim.banked = 1;
+  }
+  function garage(from) {
+    const v = save.veh,
+      d = S.VEHICLES[v],
+      u = save.up[v],
+      owned = save.own[v],
+      mid = state === "pause";
+    garage.from = garage.from || state;
+    if (from) garage.from = from;
+    const bar = (x, m) =>
+      '<u style="width:' + clamp((x / m) * 100, 5, 100) + '%"></u>';
+    let h =
+      '<h2>GARAGE</h2><p class="t">Coins: <b style="color:#fbbf24">' +
+      (save.coins + (mid && sim && !sim.banked ? sim.coins : 0)) +
+      "</b></p>";
+    h +=
+      '<div class="veh"><button class="btn sm g" data-a="pv"' +
+      (mid ? " disabled" : "") +
+      '>&#9664;</button><div class="c">' +
+      d.name +
+      '<div class="st"><span>Mass</span>' +
+      bar(d.mass, 20) +
+      "<span>Torque</span>" +
+      bar(d.torque * (d.drive[0] + d.drive[1]), 50000) +
+      "<span>Wheelbase</span>" +
+      bar(d.wb, 84) +
+      "<span>Suspension</span>" +
+      bar(d.ks, 2700) +
+      "</div>" +
+      (owned
+        ? ""
+        : '<button class="btn sm" data-a="buyv"' +
+          (save.coins < d.price ? " disabled" : "") +
+          ">UNLOCK " +
+          d.price +
+          "</button>") +
+      '</div><button class="btn sm g" data-a="nv"' +
+      (mid ? " disabled" : "") +
+      ">&#9654;</button></div>";
+    if (mid)
+      h +=
+        '<p class="t">Vehicle can be changed between runs. Upgrades apply live.</p>';
+    for (let i = 0; i < 4; i++) {
+      const c = cost(u[i]);
+      h +=
+        '<div class="row"><div class="n">' +
+        UPN[i][0] +
+        "<small>" +
+        UPN[i][1] +
+        '</small><div class="pips">' +
+        Array.from(
+          { length: MAXL },
+          (_, j) => '<i class="' + (j < u[i] ? "on" : "") + '"></i>',
+        ).join("") +
+        '</div></div><button class="btn sm" data-a="up' +
+        i +
+        '"' +
+        (!owned || u[i] >= MAXL || avail() < c ? " disabled" : "") +
+        ">" +
+        (u[i] >= MAXL ? "MAX" : c) +
+        "</button></div>";
+    }
+    h +=
+      '<button class="btn" data-a="gback">' +
+      (garage.from === "pause"
+        ? "BACK"
+        : garage.from === "over"
+          ? "BACK"
+          : "BACK") +
+      "</button>";
+    show(h);
+  }
+  const avail = () =>
+    save.coins + (state === "pause" && sim && !sim.banked ? sim.coins : 0);
+  function spend(c) {
+    if (state === "pause" && sim && !sim.banked) {
+      const t = Math.min(sim.coins, c);
+      sim.coins -= t;
+      c -= t;
+    }
+    save.coins -= c;
+  }
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || b.disabled) return;
+    const a = b.dataset.a;
+    audio();
+    if (a === "start") start();
+    else if (a === "resume") resume();
+    else if (a === "garage") {
+      garage.from = state;
+      garage();
+    } else if (a === "gback") {
+      const f = garage.from;
+      garage.from = null;
+      f === "pause"
+        ? ((state = "run"), pause())
+        : f === "over"
+          ? endScreen()
+          : menu();
+    } else if (a === "pv" || a === "nv") {
+      save.veh = (save.veh + (a === "nv" ? 1 : 2)) % 3;
+      persist();
+      garage();
+    } else if (a === "buyv") {
+      const d = S.VEHICLES[save.veh];
+      if (save.coins >= d.price) {
+        save.coins -= d.price;
+        save.own[save.veh] = 1;
+        persist();
+        garage();
+      }
+    } else if (a.startsWith("up")) {
+      const i = +a[2],
+        u = save.up[save.veh],
+        c = cost(u[i]);
+      if (u[i] < MAXL && avail() >= c) {
+        spend(c);
+        u[i]++;
+        if (sim && sim.veh === save.veh) {
+          const f0 = sim.st.tank;
+          sim.up = u.slice();
+          sim.recalc();
+          if (i === 3) sim.fuel += sim.st.tank - f0;
+        }
+        persist();
+        garage();
+      }
+    }
+  });
+  function endScreen() {
+    state = "over";
+    endRun.replay = 1;
+    const s = sim;
+    show(
+      '<h1 style="font-size:clamp(22px,5vw,40px)">' +
+        (s.over === "out of fuel" ? "OUT OF FUEL" : "CRASHED") +
+        '</h1><p class="t">Distance <b>' +
+        Math.floor(s.dist) +
+        "m</b> &middot; wallet <b>" +
+        save.coins +
+        '</b></p><button class="btn" data-a="start">RETRY</button><button class="btn g" data-a="garage">GARAGE</button>',
+    );
+  }
+  $("pb").onclick = () => {
+    audio();
+    state === "run" ? pause() : state === "pause" && resume();
+  };
+  function syncMute() {
+    $("mb").style.opacity = save.mute ? 0.4 : 1;
+    $("mb").setAttribute("aria-pressed", save.mute ? "false" : "true");
+  }
+  $("mb").onclick = () => {
+    save.mute = save.mute ? 0 : 1;
+    persist();
+    syncMute();
+    if (!save.mute) audio();
+  };
+  syncMute();
+  /* ---------- background ---------- */
+  let sky = null,
+    stars = [];
+  function buildBg() {
+    const b = sim.biome;
+    sky = ctx.createLinearGradient(0, 0, 0, H * DPR);
+    sky.addColorStop(0, b.sky[0]);
+    sky.addColorStop(1, b.sky[1]);
+    stars = [];
+    if (b.stars)
+      for (let i = 0; i < 70; i++)
+        stars.push([
+          Math.random(),
+          Math.random() * 0.7,
+          Math.random() * 1.5 + 0.5,
+        ]);
+  }
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2) * qual;
+    const w = cv.clientWidth || innerWidth,
+      h = cv.clientHeight || innerHeight;
+    W = w;
+    H = h;
+    cv.width = Math.max(1, Math.round(w * DPR));
+    cv.height = Math.max(1, Math.round(h * DPR));
+    if (sim) buildBg();
+  }
+  addEventListener("resize", resize);
+  addEventListener("orientationchange", () => setTimeout(resize, 200));
+  if (window.visualViewport) visualViewport.addEventListener("resize", resize);
+  function hills(off, par, amp, col, base, sc) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    const ox = cam.x * par,
+      oy = cam.y * par * 0.3;
+    for (let x = 0; x <= W + 20; x += 20) {
+      const wx = x + ox;
+      ctx.lineTo(
+        x,
+        H * base -
+          oy * sc +
+          Math.sin(wx * 0.004 + off) * amp +
+          Math.sin(wx * 0.011 + off * 2) * amp * 0.4,
+      );
+    }
+    ctx.lineTo(W, H);
+    ctx.fill();
+  }
+  /* ---------- render ---------- */
+  function wheelDraw(w, r, al) {
+    const x = w.px + (w.x - w.px) * al,
+      y = w.py + (w.y - w.py) * al,
+      an = w.pang + (w.ang - w.pang) * al;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(an);
+    ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#cbd5e1";
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.62, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = "#475569";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i * TAU) / 6;
+      ctx.moveTo(0, 0);
+      ctx.lineTo(Math.cos(a) * r * 0.6, Math.sin(a) * r * 0.6);
+    }
+    ctx.stroke();
+    ctx.fillStyle = "#dc2626";
+    ctx.beginPath();
+    ctx.arc(r * 0.42, 0, 1.8, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#94a3b8";
+    ctx.beginPath();
+    ctx.arc(0, 0, 2.2, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+  const line = (a, b, c, d, col, w) => {
+    ctx.strokeStyle = col;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(a, b);
+    ctx.lineTo(c, d);
+    ctx.stroke();
+  };
+  function bodyDraw(id, col, wl) {
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const d = sim.def;
+    for (let i = 0; i < 2; i++) {
+      const ax = ((i ? 1 : -1) * d.wb) / 2,
+        ay0 = d.ay,
+        bx = wl[i][0],
+        by = wl[i][1];
+      const dx = bx - ax,
+        dy = by - ay0,
+        L = Math.hypot(dx, dy) || 1,
+        ux = dx / L,
+        uy = dy / L,
+        px = -uy,
+        py = ux;
+      const amp = 3.2 * clamp(sim.wh[i].s / d.susL, 0.35, 1.2);
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay0);
+      const n = 10;
+      for (let k = 1; k < n; k++) {
+        const t = k / n,
+          s = (k % 2 ? 1 : -1) * amp;
+        ctx.lineTo(ax + ux * L * t + px * s, ay0 + uy * L * t + py * s);
+      }
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.strokeStyle = "#cbd5e1";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay0);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+    if (id === "bike") {
+      line(-24, -2, 10, -4, "#1e293b", 6);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(-6, -12);
+      ctx.lineTo(14, -12);
+      ctx.lineTo(18, -4);
+      ctx.lineTo(-4, -2);
+      ctx.fill();
+      ctx.fillStyle = "#111";
+      ctx.fillRect(-22, -12, 16, 5);
+      ctx.fillStyle = "#475569";
+      ctx.fillRect(-4, -2, 16, 10);
+      line(17, -16, 24, 6, "#cbd5e1", 3);
+      line(15, -17, 20, -17, "#111", 3);
+    } else if (id === "jeep") {
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(-46, 0);
+      ctx.lineTo(-46, -14);
+      ctx.lineTo(-20, -16);
+      ctx.lineTo(-14, -30);
+      ctx.lineTo(8, -30);
+      ctx.lineTo(14, -16);
+      ctx.lineTo(46, -12);
+      ctx.lineTo(46, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#cfe8ff";
+      ctx.beginPath();
+      ctx.moveTo(-12, -28);
+      ctx.lineTo(6, -28);
+      ctx.lineTo(10, -17);
+      ctx.lineTo(-14, -17);
+      ctx.fill();
+      line(-20, -34, 10, -34, "#111", 3);
+    } else {
+      line(-34, -2, 34, -4, "#1e293b", 7);
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.moveTo(-40, -6);
+      ctx.lineTo(-20, -18);
+      ctx.lineTo(6, -12);
+      ctx.lineTo(40, -4);
+      ctx.lineTo(-10, 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#111";
+      ctx.fillRect(-18, -14, 18, 5);
+      line(18, -16, 26, -8, "#cbd5e1", 3);
+    }
+  }
+  const RP = {};
+  function riderDraw(pz) {
+    ctx.lineCap = "round";
+    line(pz.hipX + 3, pz.hipY, pz.k.x + 2, pz.k.y, "#1e40af", 4.2);
+    line(pz.k.x + 2, pz.k.y, pz.pegX + 2, pz.pegY, "#1e40af", 4.2);
+    line(pz.hipX, pz.hipY, pz.k.x, pz.k.y, "#1d4ed8", 5);
+    line(pz.k.x, pz.k.y, pz.pegX, pz.pegY, "#1d4ed8", 5);
+    line(pz.hipX, pz.hipY, pz.shX, pz.shY, "#f8fafc", 8);
+    line(pz.shX + 2, pz.shY + 1, pz.e.x + 1, pz.e.y, "#94a3b8", 3.4);
+    line(pz.e.x + 1, pz.e.y, pz.gripX + 1, pz.gripY, "#94a3b8", 3.4);
+    line(pz.shX, pz.shY, pz.e.x, pz.e.y, "#e2e8f0", 4);
+    line(pz.e.x, pz.e.y, pz.gripX, pz.gripY, "#e2e8f0", 4);
+    ctx.fillStyle = "#e11d48";
+    ctx.beginPath();
+    ctx.arc(pz.headX, pz.headY, 7, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#facc15";
+    ctx.beginPath();
+    ctx.arc(pz.headX, pz.headY, 6.2, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(pz.headX + 1, pz.headY - 2.2, 6, 3.4);
+  }
+  function ragDraw() {
+    const n = sim.rag;
+    ctx.lineCap = "round";
+    line(n[2].x, n[2].y, n[4].x, n[4].y, "#1d4ed8", 5);
+    line(n[4].x, n[4].y, n[5].x, n[5].y, "#1d4ed8", 5);
+    line(n[1].x, n[1].y, n[2].x, n[2].y, "#f8fafc", 8);
+    line(n[1].x, n[1].y, n[3].x, n[3].y, "#e2e8f0", 4);
+    ctx.fillStyle = "#facc15";
+    ctx.beginPath();
+    ctx.arc(n[0].x, n[0].y, 6.5, 0, TAU);
+    ctx.fill();
+  }
+  function render(al, dt) {
+    const b = sim.biome,
+      d = sim.def,
+      iw = 1 / Math.max(1, W);
+    const cx = sim.px + (sim.x - sim.px) * al,
+      cy = sim.py + (sim.y - sim.py) * al,
+      ca = sim.pa + (sim.a - sim.pa) * al;
+    /* camera */
+    const fx = sim.crashed && sim.rag ? sim.rag[0].x : cx,
+      fy = sim.crashed && sim.rag ? sim.rag[0].y : cy;
+    const sp = Math.hypot(sim.vx, sim.vy),
+      tz =
+        1 -
+        Math.min(0.28, (sp / 620) * 0.22) -
+        (sim.nitOn ? 0.16 : 0) -
+        (sim.air > 0.4 ? 0.1 : 0);
+    const kk = 1 - Math.exp(-dt * 5);
+    cam.z += (tz - cam.z) * (1 - Math.exp(-dt * 3));
+    cam.x += (fx + clamp(sim.vx * 0.3, -160, 220) - cam.x) * kk;
+    cam.y += (fy - 20 - cam.y) * (1 - Math.exp(-dt * 4));
+    const S0 = Math.min(H / 500, W / 640) * cam.z;
+    k = S0;
+    const rm = reducedMotion;
+    let sx = 0,
+      sy = 0;
+    const sh = (sim.nitOn ? 3 : 0) + shake;
+    if (sh > 0.1 && !rm) {
+      sx = (Math.random() - 0.5) * sh;
+      sy = (Math.random() - 0.5) * sh;
+    }
+    shake *= 0.9;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+    if (stars.length) {
+      ctx.fillStyle = "#fff";
+      for (const s of stars) ctx.fillRect(s[0] * W, s[1] * H, s[2], s[2]);
+    }
+    ctx.fillStyle = b.sun;
+    ctx.beginPath();
+    ctx.arc(W * 0.8, H * 0.2, Math.min(W, H) * 0.06, 0, TAU);
+    ctx.fill();
+    hills(1, 0.05, H * 0.08, b.far[0], 0.62, 0.3);
+    hills(3, 0.12, H * 0.07, b.far[1], 0.72, 0.5);
+    /* world */
+    const ax = W * 0.36,
+      ay = H * 0.58;
+    ctx.setTransform(
+      DPR * k,
+      0,
+      0,
+      DPR * k,
+      DPR * (ax - cam.x * k + sx),
+      DPR * (ay - cam.y * k + sy),
+    );
+    const x0 = cam.x - ax / k - 40,
+      x1 = cam.x + (W - ax) / k + 40,
+      T = sim.T,
+      DX = T.DX;
+    const i0 = Math.max(0, Math.floor(x0 / DX)),
+      i1 = Math.ceil(x1 / DX);
+    T.extend(x1 + 500);
+    const yb = cam.y + (H - ay) / k + 60;
+    const gr = ctx.createLinearGradient(0, cam.y - 300, 0, cam.y + 600);
+    gr.addColorStop(0, b.dirt[0]);
+    gr.addColorStop(1, b.dirt[1]);
+    ctx.fillStyle = gr;
+    ctx.beginPath();
+    ctx.moveTo(i0 * DX, yb);
+    const step = Math.max(4, DX / 2);
+    for (let x = i0 * DX; x <= i1 * DX; x += step) ctx.lineTo(x, T.crY(x));
+    ctx.lineTo(i1 * DX, T.crY(i1 * DX));
+    ctx.lineTo(i1 * DX, yb);
+    ctx.fill();
+    ctx.strokeStyle = b.top;
+    ctx.lineWidth = 8;
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    for (let x = i0 * DX; x <= i1 * DX; x += step) {
+      x === i0 * DX ? ctx.moveTo(x, T.crY(x) + 1) : ctx.lineTo(x, T.crY(x) + 1);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = b.deco;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = i0 - (i0 % 3); i <= i1; i += 3) {
+      const h = ((i * 2654435761) >>> 0) % 100;
+      if (h < 55) {
+        const y = T.ys[i] + 12 + (h % 5) * 6;
+        ctx.moveTo(i * DX, y);
+        ctx.lineTo(i * DX + 6 + (h % 7), y);
+      }
+    }
+    ctx.stroke();
+    if (x0 < 120) {
+      line(60, T.y(60), 60, T.y(60) - 46, "#fff", 3);
+      ctx.fillStyle = "#dc2626";
+      ctx.fillRect(60, T.y(60) - 46, 30, 14);
+    }
+    /* items */
+    const it = T.items,
+      tt = performance.now() / 300;
+    for (let i = sim.iScan; i < it.length && it[i].x < x1 + 200; i++) {
+      const o = it[i];
+      if (!o.on || o.x < x0 - 200) continue;
+      if (o.t === 1) {
+        ctx.fillStyle = "#dc2626";
+        ctx.fillRect(o.x - 8, o.y - 10, 16, 20);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(o.x - 5, o.y - 3, 10, 5);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(o.x - 4, o.y - 14, 8, 4);
+      } else {
+        const w = Math.abs(Math.cos(tt + o.x * 0.05)),
+          r = o.t === 2 ? 11 : 7;
+        ctx.fillStyle = o.t === 2 ? "#f97316" : "#fbbf24";
+        ctx.beginPath();
+        ctx.ellipse(o.x, o.y, Math.max(1.5, r * w), r, 0, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = "#b45309";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+    /* vehicle */
+    const R = d.wr,
+      wl = [];
+    for (let i = 0; i < 2; i++) {
+      const w = sim.wh[i],
+        wx = w.px + (w.x - w.px) * al - cx,
+        wy = w.py + (w.y - w.py) * al - cy,
+        c = Math.cos(-ca),
+        s = Math.sin(-ca);
+      wl.push([wx * c - wy * s, wx * s + wy * c]);
+    }
+    wheelDraw(sim.wh[0], R, al);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ca);
+    bodyDraw(d.id, d.color, wl);
+    if (!sim.crashed) riderDraw(S.riderPose(sim, RP));
+    ctx.restore();
+    wheelDraw(sim.wh[1], R, al);
+    if (sim.crashed && sim.rag) ragDraw();
+    /* particles */
+    for (let i = 0; i < NP; i++) {
+      const p = P[i];
+      if (p.a <= 0) continue;
+      const a = clamp(p.a, 0, 1);
+      ctx.globalAlpha = a * (p.t === 1 ? 0.5 : 1);
+      ctx.fillStyle =
+        p.t === 2
+          ? a > 0.55
+            ? "#fde047"
+            : "#f97316"
+          : p.t === 3
+            ? "#fde68a"
+            : p.t === 4
+              ? "#78716c"
+              : p.t === 1
+                ? "#cbd5e1"
+                : b.top === "#ffffff"
+                  ? "#e2f2ff"
+                  : "#b8a37a";
+      ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }
+  /* ---------- HUD ---------- */
+  const H_ = { d: $("dst"), c: $("cn"), s: $("spd"), f: $("bf"), n: $("bn") },
+    hc = {};
+  const fi = { f: H_.f.firstChild, n: H_.n.firstChild };
+  function setT(el, key, v) {
+    if (hc[key] !== v) {
+      hc[key] = v;
+      el.textContent = v;
+    }
+  }
+  function hud() {
+    setT(H_.d, "d", Math.floor(sim.dist) + "m");
+    setT(H_.c, "c", String(sim.coins));
+    setT(H_.s, "s", Math.round(sim.kmh) + " km/h");
+    const f = sim.fuel / sim.st.tank;
+    const fw = Math.round(f * 100) + "%";
+    if (hc.fw !== fw) {
+      hc.fw = fw;
+      H_.f.firstElementChild.style.width = fw;
+      H_.f.classList.toggle("low", f < 0.25);
+    }
+    const nw = Math.round(sim.nitro) + "%";
+    if (hc.nw !== nw) {
+      hc.nw = nw;
+      H_.n.firstElementChild.style.width = nw;
+    }
+    H_.n.classList.toggle("hot", !!sim.nitOn);
+  }
+  /* ---------- main loop ---------- */
+  function frame(now) {
+    requestAnimationFrame(frame);
+    let dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if (!(dt > 0)) dt = 0.001;
+    const t0 = performance.now();
+    if (state === "run") {
+      readInput();
+      acc += dt;
+      let n = 0;
+      while (acc >= S.DT && n < 12) {
+        sim.step(inp);
+        acc -= S.DT;
+        n++;
+      }
+      if (n === 12) acc = 0;
+      stepP(dt);
+      if (sim.thrS > 0.2 && sim.wh[0].gr && !sim.crashed) {
+        if (Math.random() < (0.45 + sim.thrS * 0.4) * qual)
+          emit(
+            0,
+            sim.wh[0].x,
+            sim.wh[0].y + sim.def.wr,
+            1 + (sim.thrS > 0.7 ? 1 : 0),
+            48 + sim.kmh * 0.4,
+            -sim.vx * 0.35,
+            -24,
+          );
+      }
+      if (sim.thrS > 0.15 && !sim.crashed) {
+        const c = Math.cos(sim.a),
+          s = Math.sin(sim.a),
+          lx = -sim.def.wb / 2 - 22;
+        if (Math.random() < 0.35 * qual)
+          emit(
+            1,
+            sim.x + lx * c + 4 * s,
+            sim.y + lx * s - 4 * c,
+            1,
+            18,
+            -c * 80,
+            -s * 80,
+          );
+      }
+      if (sim.nitOn) {
+        const c = Math.cos(sim.a),
+          s = Math.sin(sim.a),
+          lx = -sim.def.wb / 2 - 26;
+        emit(
+          2,
+          sim.x + lx * c + 2 * s,
+          sim.y + lx * s - 2 * c,
+          3,
+          55,
+          -c * 260 + sim.vx * 0.3,
+          -s * 260 + sim.vy * 0.3,
+        );
+        shake = Math.max(shake, 2.4);
+      }
+      if (sim.crashed && Math.random() < 0.3) emit(1, sim.x, sim.y - 10, 1, 25);
+      if (toastT > 0 && (toastT -= dt) <= 0) $("toast").style.opacity = 0;
+    } else if (sim) {
+      stepP(dt);
+      acc = 0;
+    }
+    if (sim) {
+      render(state === "run" ? acc / S.DT : 1, dt);
+      if (state === "run") hud();
+      engineSnd();
+      if (state === "pause") {
+        /* frozen */
+      }
+    }
+    /* adaptive quality: keep frame time under budget on slow devices */
+    const ft = now - (frame.p || now);
+    frame.p = now;
+    if (ft > 0 && ft < 200) ema += (ft - ema) * 0.05;
+    if (ema > 24 && qual > 0.55 && ++slow > 90) {
+      qual = Math.max(0.55, qual * 0.8);
+      slow = 0;
+      ema = 16;
+      resize();
+    } else if (ema <= 24) slow = 0;
+    frame.cost = performance.now() - t0;
+    frame.ema = ema;
+  }
   resize();
-  bind();
-  if (best) $("bst").textContent = best.toFixed(2);
-  running = 0;
+  newRun(params.has("seed") ? +params.get("seed") : null);
+  menu();
+  last = performance.now();
   requestAnimationFrame(frame);
-
-  // test / automation hook (used by tests/verify.js and the Playwright suite)
-  window.__TOD = {
-    TRACK,
-    B,
-    J,
-    CT,
-    inp,
-    rider,
-    step,
-    resetBike,
-    qg,
-    groundAt,
-    physics,
-    get running() {
-      return running;
+  window.__tod = {
+    get sim() {
+      return sim;
     },
-    set running(v) {
-      running = v;
+    get state() {
+      return state;
     },
-    get simT() {
-      return simT;
-    },
-    set simT(v) {
-      simT = v;
-    },
-    get best() {
-      return best;
-    },
-    get coasting() {
-      return coasting;
-    },
-    constants: { G, DT, WR, T0, W0, KD, OT_MULT, W0_OT, MU_S, MU_K, MU_W },
+    frame,
+    S,
+    P,
   };
 })();
