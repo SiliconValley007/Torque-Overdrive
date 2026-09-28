@@ -19,11 +19,4 @@ Endless, procedurally generated, Hill-Climb-Racing-style arcade physics game. Pu
 - **Controls (touch):** auto-shown overlay on phones, tablets, and coarse pointers — Lean L/R, Nitro, Hop, Brake, Gas. Multi-touch pointer events; 44 px+ targets; safe-area insets for notched iPhones. Keyboard still works on hybrid devices.
 - **Performance:** allocation-free hot loop, DPR capped at 2, adaptive resolution if frames exceed budget, auto-pause when the tab is hidden, iOS AudioContext unlock on first gesture.
 
-## Tests
-
-```
-node tests/verify.js
-node tests/moon_bot.js
-```
-
 `verify.js` covers terrain validity, wheel omega, hill roll-back, nitro, fuel, and ragdoll. `moon_bot.js` is a headless low-g drive check.
