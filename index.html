@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0F172A" />
+    <meta
+      name="description"
+      content="TORQUE OVERDRIVE — 2D dirt-bike trials with rigid-body physics. Play free in the browser on desktop, tablet, and phone."
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>TORQUE OVERDRIVE</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@700;900&display=swap"
+      rel="stylesheet"
+      crossorigin="anonymous"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect fill='%230F172A' width='64' height='64'/%3E%3Ccircle cx='20' cy='44' r='10' fill='none' stroke='%23DC2626' stroke-width='4'/%3E%3Ccircle cx='46' cy='44' r='10' fill='none' stroke='%2338BDF8' stroke-width='4'/%3E%3Cpath d='M16 40 L30 22 L48 28' fill='none' stroke='%23F8FAFC' stroke-width='3'/%3E%3C/svg%3E"
+    />
+    <style>
+      :root {
+        --bg: #0f172a;
+        --fg: #fff;
+        --p: #dc2626;
+        --s: #38bdf8;
+        --a: #22c55e;
+        --m: #94a3b8;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        height: 100dvh;
+        background: var(--bg);
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: var(--bg);
+      }
+      #ui {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        font-family: Orbitron, sans-serif;
+        color: var(--fg);
+      }
+      #top {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: space-between;
+        padding: calc(12px + env(safe-area-inset-top)) 16px 0;
+        gap: 12px;
+      }
+      .panel {
+        background: rgba(15, 23, 42, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 8px 12px;
+        min-width: 72px;
+      }
+      .lbl {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        color: var(--m);
+        text-transform: uppercase;
+      }
+      .val {
+        font-size: 18px;
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        line-height: 1.2;
+      }
+      .val.red {
+        color: var(--p);
+      }
+      .val.cyan {
+        color: var(--s);
+      }
+      .val.green {
+        color: var(--a);
+      }
+      #bars {
+        position: absolute;
+        top: calc(64px + env(safe-area-inset-top));
+        left: 16px;
+        width: 160px;
+      }
+      .bar {
+        height: 6px;
+        background: #1e293b;
+        margin-top: 6px;
+        overflow: hidden;
+      }
+      .bar > i {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: var(--s);
+      }
+      .bar.ot > i {
+        background: var(--p);
+      }
+      .bar.hop > i {
+        background: #f59e0b;
+      }
+      .bar.ot.ready > i {
+        background: var(--a);
+      }
+      #otl.ready {
+        color: var(--a);
+      }
+      #msg {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        pointer-events: auto;
+        background: rgba(15, 23, 42, 0.82);
+        padding: 24px;
+      }
+      #msg h1 {
+        font-size: clamp(28px, 6vw, 56px);
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        color: var(--p);
+        text-shadow: 0 0 24px rgba(220, 38, 38, 0.45);
+      }
+      #msg p {
+        font-family: "JetBrains Mono", monospace;
+        font-size: 13px;
+        color: var(--m);
+        margin: 14px 0 22px;
+        max-width: 520px;
+        line-height: 1.6;
+      }
+      #msg b {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      #go {
+        pointer-events: auto;
+        cursor: pointer;
+        border: 0;
+        background: var(--p);
+        color: #fff;
+        font-family: Orbitron, sans-serif;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        padding: 14px 28px;
+        font-size: 14px;
+        min-height: 48px;
+        transition:
+          transform 0.15s,
+          filter 0.15s;
+      }
+      #go2 {
+        pointer-events: auto;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        background: transparent;
+        color: #fff;
+        font-family: Orbitron, sans-serif;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        padding: 14px 22px;
+        font-size: 12px;
+        min-height: 48px;
+        margin-left: 10px;
+      }
+      #toast {
+        position: absolute;
+        top: 22%;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-family: Orbitron, sans-serif;
+        font-weight: 900;
+        letter-spacing: 0.3em;
+        color: var(--a);
+        opacity: 0;
+        transition: opacity 0.35s;
+        text-shadow: 0 0 16px rgba(34, 197, 94, 0.5);
+      }
+      #go:hover,
+      #go:focus {
+        filter: brightness(1.1);
+        transform: scale(1.03);
+        outline: 2px solid var(--s);
+        outline-offset: 3px;
+      }
+      #go:active {
+        transform: scale(0.97);
+      }
+      #touch {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: none;
+        padding: 0 10px calc(12px + env(safe-area-inset-bottom));
+        justify-content: space-between;
+        pointer-events: none;
+        gap: 10px;
+        z-index: 5;
+      }
+      #touch .col {
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+      }
+      #touch button {
+        pointer-events: auto;
+        cursor: pointer;
+        min-width: 56px;
+        min-height: 56px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(15, 23, 42, 0.78);
+        color: #fff;
+        font-family: Orbitron, sans-serif;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        -webkit-tap-highlight-color: transparent;
+        touch-action: manipulation;
+        border-radius: 8px;
+      }
+      #touch button.on {
+        background: rgba(220, 38, 38, 0.55);
+        border-color: var(--p);
+      }
+      #touch .thr {
+        min-width: 76px;
+        min-height: 76px;
+        background: rgba(34, 197, 94, 0.28);
+      }
+      #touch .ot {
+        background: rgba(220, 38, 38, 0.22);
+      }
+      body.touch #touch {
+        display: flex;
+      }
+      body.touch #hint {
+        display: none;
+      }
+      body.touch #bars {
+        width: 120px;
+        opacity: 0.85;
+      }
+      @media (max-width: 700px) {
+        .val {
+          font-size: 13px;
+        }
+        .panel {
+          padding: 6px 8px;
+          min-width: 52px;
+        }
+        #top {
+          gap: 6px;
+          padding-left: 8px;
+          padding-right: 8px;
+          flex-wrap: wrap;
+        }
+        #bars {
+          top: calc(96px + env(safe-area-inset-top));
+        }
+        #touch button {
+          min-width: 48px;
+          min-height: 48px;
+          font-size: 10px;
+        }
+        #msg p {
+          font-size: 12px;
+        }
+      }
+      @media (orientation: landscape) and (max-height: 500px) {
+        #top {
+          padding-top: calc(6px + env(safe-area-inset-top));
+        }
+        #bars {
+          display: none;
+        }
+        #touch button {
+          min-height: 48px;
+          min-width: 48px;
+        }
+        #msg h1 {
+          font-size: 22px;
+        }
+        #touch {
+          padding-bottom: calc(6px + env(safe-area-inset-bottom));
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #go {
+          transition: none;
+        }
+        #toast {
+          transition: none;
+        }
+        canvas {
+          image-rendering: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <noscript>TORQUE OVERDRIVE needs JavaScript enabled.</noscript>
+    <canvas id="c"></canvas>
+    <div id="ui">
+      <div id="top">
+        <div class="panel">
+          <div class="lbl">Speed</div>
+          <div class="val cyan" id="spd">0</div>
+        </div>
+        <div class="panel">
+          <div class="lbl">Dist</div>
+          <div class="val" id="dst">0</div>
+        </div>
+        <div class="panel">
+          <div class="lbl">Time</div>
+          <div class="val" id="tim">0.00</div>
+        </div>
+        <div class="panel">
+          <div class="lbl">Best</div>
+          <div class="val green" id="bst">--</div>
+        </div>
+      </div>
+      <div id="bars">
+        <div class="lbl">Throttle</div>
+        <div class="bar"><i id="bthr"></i></div>
+        <div class="lbl" id="otl">Overtorque</div>
+        <div class="bar ot"><i id="bot"></i></div>
+        <div class="lbl">Preload</div>
+        <div class="bar hop"><i id="bhop"></i></div>
+      </div>
+      <div id="msg">
+        <h1>TORQUE OVERDRIVE</h1>
+        <p id="hint">
+          <b>W/S</b> throttle/brake &nbsp; <b>A/D</b> lean &nbsp;
+          <b>SPACE</b> preload/hop &nbsp; <b>SHIFT</b> overtorque &nbsp;
+          <b>R</b> retry
+        </p>
+        <p>Compress. Release. Commit. Physics is the judge.</p>
+        <div class="btns">
+          <button id="go" type="button">ENGAGE</button
+          ><button id="go2" type="button" style="display: none">RESTART</button>
+        </div>
+      </div>
+      <div id="toast"></div>
+      <div id="touch" aria-hidden="true">
+        <div class="col">
+          <button type="button" data-k="leanL" aria-label="Lean left">
+            LEAN L
+          </button>
+          <button type="button" data-k="leanR" aria-label="Lean right">
+            LEAN R
+          </button>
+          <button type="button" data-k="retry" aria-label="Retry checkpoint">
+            RTRY
+          </button>
+        </div>
+        <div class="col">
+          <button type="button" data-k="hop" aria-label="Preload hop">
+            HOP
+          </button>
+          <button type="button" data-k="ot" class="ot" aria-label="Overtorque">
+            OT
+          </button>
+          <button type="button" data-k="brk" aria-label="Brake">BRK</button>
+          <button type="button" data-k="thr" class="thr" aria-label="Throttle">
+            GAS
+          </button>
+        </div>
+      </div>
+    </div>
+    <script src="game.js"></script>
+  </body>
+</html>
