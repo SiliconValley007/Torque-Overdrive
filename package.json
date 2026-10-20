@@ -1,0 +1,11 @@
+{
+  "name": "torque-overdrive",
+  "private": true,
+  "description": "Endless procedural hill-climb racing. Static HTML5 Canvas.",
+  "scripts": {
+    "test": "node verify.js && node e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.49.1"
+  }
+}

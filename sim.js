@@ -507,6 +507,7 @@
     this.pose = {};
     this.ev = null;
     this.T = new Terrain(this.seed, this.biome);
+    this.rng = mulberry32(this.seed ^ 0xc0ffee01);
     this.bindVehicle(o.veh, o.up);
     this.reset();
   }
@@ -978,7 +979,7 @@
         ry = p[0] * sa + p[1] * ca,
         x = this.x + rx,
         y = this.y + ry;
-      const vx = this.vx - this.w * ry + (Math.random() - 0.5) * 80,
+      const vx = this.vx - this.w * ry + (this.rng() - 0.5) * 80,
         vy = this.vy + this.w * rx - 40 * (i < 3 ? 1 : 0.3);
       return { x, y, px: x - vx * dt, py: y - vy * dt };
     });

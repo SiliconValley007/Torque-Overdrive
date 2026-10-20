@@ -1,0 +1,71 @@
+name: pages
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: node --check sim.js && node --check game.js && node --check sw.js && node --check verify.js && node --check e2e.mjs
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm test
+      - uses: actions/configure-pages@v5
+      - name: Build _site
+        run: |
+          mkdir -p _site
+          find . -mindepth 1 -maxdepth 1 ! -name _site ! -name .git ! -name .github ! -name node_modules ! -name e2e.mjs ! -name verify.js ! -name package.json ! -name package-lock.json ! -name .gitignore -exec cp -a {} _site/ \;
+          OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          REPO='${{ github.event.repository.name }}'
+          find _site -type f \( -name '*.html' -o -name '*.md' -o -name '*.js' -o -name '*.txt' -o -name '*.webmanifest' \) -exec sed -i "s|https://USER.github.io/REPO/|https://${OWNER}.github.io/${REPO}/|g" {} +
+          if grep -R -q 'USER.github.io' _site; then
+            echo 'placeholder USER.github.io remains in _site'
+            exit 1
+          fi
+          OLDVER=$(sed -n 's/^const VER = "\([^"]*\)".*/\1/p' _site/sw.js | head -1)
+          sed -i "s|const VER = \"[^\"]*\"|const VER = \"tod-${GITHUB_SHA::8}\"|" _site/sw.js
+          NEWVER=$(sed -n 's/^const VER = "\([^"]*\)".*/\1/p' _site/sw.js | head -1)
+          if [ -z "$NEWVER" ] || [ "$NEWVER" = "$OLDVER" ]; then
+            echo "sw.js VER stamp failed old=$OLDVER new=$NEWVER"
+            exit 1
+          fi
+          node <<'NODE'
+          const fs=require("fs"),path=require("path");
+          const sw=fs.readFileSync("_site/sw.js","utf8");
+          const m=sw.match(/PRECACHE\s*=\s*\[([\s\S]*?)\]/);
+          if(!m){console.error("no PRECACHE"); process.exit(1)}
+          const entries=[...m[1].matchAll(/["']([^"']+)["']/g)].map(x=>x[1]);
+          let bad=0;
+          for(const e of entries){
+            const p=e==="./" ? "_site/index.html" : path.join("_site", e.replace(/^\.\//,""));
+            if(!fs.existsSync(p)){console.error("missing PRECACHE", e); bad=1}
+          }
+          if(bad) process.exit(1);
+          NODE
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

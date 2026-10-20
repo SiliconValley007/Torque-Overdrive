@@ -6,7 +6,21 @@
     clamp = S.clamp;
   const cv = $("c"),
     ctx = cv.getContext("2d", { alpha: false });
+  if (!ctx) {
+    const n = $("nocanvas");
+    if (n) n.style.display = "flex";
+    return;
+  }
   /* ---------- save ---------- */
+  const SAVE_KEY = "tod2";
+  const DEF_BINDS = {
+    thr: ["KeyW", "ArrowUp"],
+    brk: ["KeyS", "ArrowDown"],
+    L: ["KeyA", "ArrowLeft"],
+    R: ["KeyD", "ArrowRight"],
+    nit: ["ShiftLeft", "ShiftRight"],
+    hop: ["Space"],
+  };
   let save = {
     coins: 0,
     best: 0,
@@ -18,16 +32,69 @@
       [0, 0, 0, 0],
     ],
     mute: 0,
+    volM: 80,
+    volS: 80,
+    volMus: 40,
+    qmode: 1,
+    rm: 0,
+    hap: 1,
+    fps: 0,
+    layout: "right",
+    ctrlSize: "md",
+    seenTut: 0,
+    biomeBest: {},
+    biomeCoins: {},
+    stats: { runs: 0, dist: 0, coins: 0, flips: 0, crashes: 0, fuelouts: 0 },
+    ach: {},
+    binds: {},
   };
   try {
-    const s = JSON.parse(localStorage.getItem("tod2") || "null");
-    if (s && s.up && s.own) save = Object.assign(save, s);
+    const raw = localStorage.getItem(SAVE_KEY);
+    const s = raw ? JSON.parse(raw) : null;
+    if (s && typeof s === "object") {
+      if (Array.isArray(s.up) && Array.isArray(s.own)) {
+        save.coins = s.coins | 0;
+        save.best = +s.best || 0;
+        save.veh = s.veh | 0;
+        save.own = [s.own[0] | 0, s.own[1] | 0, s.own[2] | 0];
+        save.up = [0, 1, 2].map((i) =>
+          Array.isArray(s.up[i])
+            ? [s.up[i][0] | 0, s.up[i][1] | 0, s.up[i][2] | 0, s.up[i][3] | 0]
+            : [0, 0, 0, 0],
+        );
+        save.mute = s.mute ? 1 : 0;
+      }
+      if (s.volM != null) save.volM = clamp(s.volM | 0, 0, 100);
+      if (s.volS != null) save.volS = clamp(s.volS | 0, 0, 100);
+      if (s.volMus != null) save.volMus = clamp(s.volMus | 0, 0, 100);
+      if (s.qmode != null) save.qmode = clamp(s.qmode | 0, 0, 2);
+      if (s.rm != null) save.rm = s.rm ? 1 : 0;
+      if (s.hap != null) save.hap = s.hap ? 1 : 0;
+      if (s.fps != null) save.fps = s.fps ? 1 : 0;
+      if (s.layout === "left" || s.layout === "right") save.layout = s.layout;
+      if (s.ctrlSize === "sm" || s.ctrlSize === "md" || s.ctrlSize === "lg")
+        save.ctrlSize = s.ctrlSize;
+      save.seenTut = s.seenTut ? 1 : 0;
+      if (s.biomeBest && typeof s.biomeBest === "object") save.biomeBest = s.biomeBest;
+      if (s.biomeCoins && typeof s.biomeCoins === "object") save.biomeCoins = s.biomeCoins;
+      if (s.stats && typeof s.stats === "object")
+        save.stats = Object.assign(save.stats, s.stats);
+      if (s.ach && typeof s.ach === "object") save.ach = s.ach;
+      if (s.binds && typeof s.binds === "object") save.binds = s.binds;
+    }
   } catch (e) {}
   const persist = () => {
     try {
-      localStorage.setItem("tod2", JSON.stringify(save));
+      localStorage.setItem(SAVE_KEY, JSON.stringify(save));
     } catch (e) {}
   };
+  function applyChrome() {
+    document.body.classList.toggle("showfps", !!save.fps);
+    document.body.classList.toggle("ctrl-left", save.layout === "left");
+    document.body.classList.toggle("ctrl-lg", save.ctrlSize === "lg");
+    document.body.classList.toggle("ctrl-sm", save.ctrlSize === "sm");
+  }
+  applyChrome();
   const UPN = [
     ["Engine Torque", "Climbing power & top speed"],
     ["Dual Suspension", "Stiffness & impact absorption"],
@@ -68,6 +135,54 @@
     cam.y = sim.y;
     buildBg();
     acc = 0;
+    resetWind();
+  }
+  const NW = 28;
+  const wX = new Float32Array(NW),
+    wY = new Float32Array(NW),
+    wL = new Float32Array(NW),
+    wTh = new Float32Array(NW),
+    wA = new Float32Array(NW),
+    wZ = new Float32Array(NW),
+    wPh = new Float32Array(NW);
+  let windI = 0,
+    windT = 0,
+    windOn = 0,
+    wxT = 0;
+  function windRoll(i) {
+    wL[i] = 40 + Math.random() * 100;
+    wTh[i] = 0.8 + Math.random() * 1.2;
+    wA[i] = 0.04 + Math.random() * 0.18;
+    wZ[i] = 0.6 + Math.random() * 0.8;
+    wPh[i] = Math.random() * TAU;
+  }
+  function windPlace(i, x0, y0, vw, vh, nx, ny, edge) {
+    windRoll(i);
+    const around = Math.random() < 0.62;
+    let px = around ? sim.x + (Math.random() - 0.5) * vw * 0.55 : x0 + Math.random() * vw;
+    let py = around ? sim.y + (Math.random() - 0.5) * vh * 0.55 : y0 + Math.random() * vh;
+    if (edge) {
+      if (Math.abs(nx) >= Math.abs(ny)) {
+        px = nx >= 0 ? x0 + vw + 8 : x0 - 8;
+        py = y0 + Math.random() * vh;
+      } else {
+        py = ny >= 0 ? y0 + vh + 8 : y0 - 8;
+        px = x0 + Math.random() * vw;
+      }
+    }
+    wX[i] = px;
+    wY[i] = py;
+  }
+  function resetWind() {
+    windI = 0;
+    windT = 0;
+    windOn = 0;
+    wxT = 0;
+    for (let i = 0; i < NW; i++) {
+      wX[i] = 0;
+      wY[i] = 0;
+      windRoll(i);
+    }
   }
   /* ---------- particles (pooled) ---------- */
   const NP = 320,
@@ -112,62 +227,177 @@
   }
   /* ---------- audio ---------- */
   let AC = null,
-    eo = null,
-    eg = null;
+    masterG = null,
+    sfxG = null,
+    musG = null,
+    engG = null,
+    engOsc = null,
+    engOsc2 = null,
+    engFlt = null,
+    musNodes = null,
+    audioReady = 0;
+  const vol = (n) => (save.mute ? 0 : clamp(n, 0, 100) / 100);
   function audio() {
-    if (save.mute) return;
     try {
       if (!AC) {
         AC = new (window.AudioContext || window.webkitAudioContext)();
-        eo = AC.createOscillator();
-        eg = AC.createGain();
-        const f = AC.createBiquadFilter();
-        eo.type = "sawtooth";
-        f.type = "lowpass";
-        f.frequency.value = 700;
-        eg.gain.value = 0;
-        eo.connect(f);
-        f.connect(eg);
-        eg.connect(AC.destination);
-        eo.start();
+        masterG = AC.createGain();
+        sfxG = AC.createGain();
+        musG = AC.createGain();
+        engG = AC.createGain();
+        masterG.gain.value = vol(save.volM);
+        sfxG.gain.value = vol(save.volS);
+        musG.gain.value = vol(save.volMus) * 0.35;
+        engG.gain.value = 0;
+        sfxG.connect(masterG);
+        musG.connect(masterG);
+        engG.connect(masterG);
+        masterG.connect(AC.destination);
+        engOsc = AC.createOscillator();
+        engOsc2 = AC.createOscillator();
+        engFlt = AC.createBiquadFilter();
+        engOsc.type = "sawtooth";
+        engOsc2.type = "square";
+        engFlt.type = "lowpass";
+        engFlt.frequency.value = 700;
+        engFlt.Q.value = 0.7;
+        const eg2 = AC.createGain();
+        eg2.gain.value = 0.18;
+        engOsc.connect(engFlt);
+        engOsc2.connect(eg2);
+        eg2.connect(engFlt);
+        engFlt.connect(engG);
+        engOsc.start();
+        engOsc2.start();
+        startMusic();
+        audioReady = 1;
       }
       if (AC.state === "suspended") AC.resume();
+      applyVol();
     } catch (e) {
       AC = null;
     }
   }
-  function blip(f, d, t) {
+  function applyVol() {
+    if (!AC) return;
+    try {
+      const t = AC.currentTime;
+      masterG.gain.setTargetAtTime(vol(save.volM), t, 0.04);
+      sfxG.gain.setTargetAtTime(vol(save.volS), t, 0.04);
+      musG.gain.setTargetAtTime(vol(save.volMus) * 0.35, t, 0.08);
+    } catch (e) {}
+  }
+  function startMusic() {
+    if (!AC || musNodes) return;
+    try {
+      const notes = [110, 138.59, 164.81, 146.83, 123.47, 164.81, 196, 174.61];
+      const o = AC.createOscillator(),
+        o2 = AC.createOscillator(),
+        g = AC.createGain(),
+        f = AC.createBiquadFilter();
+      o.type = "triangle";
+      o2.type = "sine";
+      f.type = "lowpass";
+      f.frequency.value = 420;
+      g.gain.value = 0.07;
+      o.connect(f);
+      o2.connect(f);
+      f.connect(g);
+      g.connect(musG);
+      o.start();
+      o2.start();
+      let i = 0;
+      const tick = () => {
+        if (!AC || AC.state !== "running") return;
+        const n = notes[i++ % notes.length];
+        try {
+          o.frequency.setTargetAtTime(n, AC.currentTime, 0.04);
+          o2.frequency.setTargetAtTime(n * 1.5, AC.currentTime, 0.06);
+        } catch (e) {}
+      };
+      tick();
+      musNodes = { o, o2, g, id: setInterval(tick, 520) };
+    } catch (e) {}
+  }
+  function blip(f, d, t, g0) {
     if (!AC || save.mute) return;
     try {
       const o = AC.createOscillator(),
         g = AC.createGain();
       o.type = t || "sine";
       o.frequency.value = f;
-      g.gain.setValueAtTime(0.12, AC.currentTime);
+      const a = (g0 || 0.12) * vol(save.volS);
+      g.gain.setValueAtTime(Math.max(0.0001, a), AC.currentTime);
       g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + d);
       o.connect(g);
-      g.connect(AC.destination);
+      g.connect(sfxG);
       o.start();
-      o.stop(AC.currentTime + d);
+      o.stop(AC.currentTime + d + 0.02);
     } catch (e) {}
   }
+  function noiseBurst(d, f0, q, amp) {
+    if (!AC || save.mute) return;
+    try {
+      const n = AC.createBuffer(1, AC.sampleRate * d, AC.sampleRate);
+      const ch = n.getChannelData(0);
+      for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+      const src = AC.createBufferSource(),
+        bp = AC.createBiquadFilter(),
+        g = AC.createGain();
+      src.buffer = n;
+      bp.type = "bandpass";
+      bp.frequency.value = f0;
+      bp.Q.value = q;
+      g.gain.setValueAtTime(amp, AC.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + d);
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(sfxG);
+      src.start();
+      src.stop(AC.currentTime + d + 0.02);
+    } catch (e) {}
+  }
+  function sfxCoin(v) {
+    blip(v > 1 ? 1100 : 880, 0.1, "square", 0.1);
+    blip(v > 1 ? 1480 : 1320, 0.14, "sine", 0.08);
+  }
+  function sfxFuel() {
+    blip(500, 0.12, "sine", 0.1);
+    blip(750, 0.18, "triangle", 0.1);
+  }
+  function sfxLand(v) {
+    noiseBurst(0.12 + Math.min(0.18, v / 1400), 180, 0.6, 0.18);
+  }
+  function sfxNitro() {
+    noiseBurst(0.22, 420, 0.8, 0.12);
+    blip(90, 0.2, "sawtooth", 0.06);
+  }
+  function sfxCrash() {
+    noiseBurst(0.45, 90, 0.4, 0.28);
+    blip(70, 0.5, "sawtooth", 0.14);
+  }
   function engineSnd() {
-    if (!AC || !eg) return;
+    if (!AC || !engG) return;
     const on =
       state === "run" && !save.mute && sim && !sim.crashed && sim.fuel > 0;
     const w = sim ? Math.abs(sim.wh[0].om) : 0;
     try {
       const n = sim && sim.nitOn ? 1 : 0;
-      eo.frequency.setTargetAtTime(
-        38 + w * 1.6 + sim.thrS * 25 + n * 40,
-        AC.currentTime,
-        0.05,
-      );
-      eg.gain.setTargetAtTime(
-        on ? 0.03 + 0.03 * sim.thrS + n * 0.02 : 0,
+      const rpm = 42 + w * 1.55 + (sim ? sim.thrS * 28 : 0) + n * 48;
+      engOsc.frequency.setTargetAtTime(rpm, AC.currentTime, 0.05);
+      engOsc2.frequency.setTargetAtTime(rpm * 0.5, AC.currentTime, 0.06);
+      engFlt.frequency.setTargetAtTime(480 + w * 8 + n * 280, AC.currentTime, 0.08);
+      engG.gain.setTargetAtTime(
+        on ? (0.028 + 0.032 * (sim ? sim.thrS : 0) + n * 0.022) * vol(save.volS) : 0,
         AC.currentTime,
         0.08,
       );
+    } catch (e) {}
+  }
+  function hap(ms, str) {
+    if (!save.hap) return;
+    try {
+      if (navigator.vibrate) navigator.vibrate(ms);
     } catch (e) {}
   }
   /* ---------- events ---------- */
@@ -181,18 +411,24 @@
   function onEv(t, x, y, v) {
     if (t === "coin") {
       emit(3, x, y, 6, 90);
-      blip(v > 1 ? 1100 : 880, 0.12);
+      sfxCoin(v);
     } else if (t === "fuel") {
       emit(3, x, y, 12, 120);
-      blip(500, 0.15);
-      blip(750, 0.2);
+      sfxFuel();
       toast("FUEL +");
     } else if (t === "land") {
       emit(0, x, y + 8, 6, 60 + v * 0.15, 0, -30);
       shake = Math.max(shake, Math.min(6, v / 120));
+      if (v > 80) {
+        sfxLand(v);
+        hap(v > 200 ? 40 : 18);
+      }
     } else if (t === "thud") emit(4, x, y, 5, 80 + v * 0.1);
-    else if (t === "flip") toast("FLIP x" + v + "  +" + 10 * v);
-    else if (t === "mile")
+    else if (t === "flip") {
+      toast("FLIP x" + v + "  +" + 10 * v);
+      save.stats.flips = (save.stats.flips | 0) + v;
+      unlockAch("flip", "STUNT RIDER");
+    } else if (t === "mile")
       toast(sim.milestone * 500 + "m  BONUS +" + 25 * sim.milestone);
     else if (t === "hop") {
       emit(0, x, y + 10, 4 + v * 8, 40 + v * 50, 0, -80);
@@ -201,24 +437,43 @@
     } else if (t === "crash") {
       emit(4, x, y, 30, 220);
       shake = 10;
-      blip(90, 0.5, "sawtooth");
+      sfxCrash();
+      hap(80);
     } else if (t === "over") endRun();
   }
+  function unlockAch(id, label) {
+    if (save.ach[id]) return;
+    save.ach[id] = 1;
+    persist();
+    toast("ACHIEVEMENT  " + label);
+  }
   /* ---------- input ---------- */
-  const GK = {
-    KeyW: "thr",
-    ArrowUp: "thr",
-    KeyS: "brk",
-    ArrowDown: "brk",
-    KeyA: "L",
-    ArrowLeft: "L",
-    KeyD: "R",
-    ArrowRight: "R",
-    ShiftLeft: "nit",
-    ShiftRight: "nit",
-    Space: "hop",
-  };
+  let waitBind = null;
+  function bindMap() {
+    const m = {};
+    const src = save.binds && Object.keys(save.binds).length ? save.binds : DEF_BINDS;
+    for (const act in DEF_BINDS) {
+      const codes = src[act] && src[act].length ? src[act] : DEF_BINDS[act];
+      for (const c of codes) m[c] = act;
+    }
+    return m;
+  }
+  let GK = bindMap();
   addEventListener("keydown", (e) => {
+    if (waitBind) {
+      e.preventDefault();
+      if (e.code !== "Escape") {
+        const nb = Object.assign({}, save.binds && Object.keys(save.binds).length ? save.binds : DEF_BINDS);
+        nb[waitBind] = [e.code];
+        save.binds = nb;
+        persist();
+        GK = bindMap();
+      }
+      waitBind = null;
+      settings();
+      return;
+    }
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT")) return;
     const g = GK[e.code];
     if (g) {
       keys[g] = 1;
@@ -227,11 +482,14 @@
     }
     if (e.repeat) return;
     if (e.code === "Escape" || e.code === "KeyP") {
-      state === "run" ? pause() : state === "pause" && resume();
+      if (state === "settings") settingsBack();
+      else if (state === "run") pause();
+      else if (state === "pause") resume();
     } else if (e.code === "KeyR" && (state === "run" || state === "over"))
       start();
     else if (e.code === "Enter" && (state === "menu" || state === "over"))
       start();
+    else if (e.code === "KeyF") toggleFs();
   });
   addEventListener("keyup", (e) => {
     const g = GK[e.code];
@@ -240,10 +498,27 @@
   addEventListener("blur", () => {
     for (const q in keys) keys[q] = 0;
     for (const q in tch) tch[q] = 0;
+    padDig = { thr: 0, brk: 0, L: 0, R: 0, nit: 0, hop: 0 };
     if (state === "run") pause();
+    if (AC && AC.state === "running")
+      try {
+        AC.suspend();
+      } catch (e) {}
+  });
+  addEventListener("focus", () => {
+    if (AC && AC.state === "suspended" && !save.mute)
+      try {
+        AC.resume();
+      } catch (e) {}
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && state === "run") pause();
+    if (document.hidden) {
+      if (state === "run") pause();
+      if (AC && AC.state === "running")
+        try {
+          AC.suspend();
+        } catch (e) {}
+    }
   });
   ["gesturestart", "contextmenu", "dblclick"].forEach((n) =>
     document.addEventListener(n, (e) => e.preventDefault()),
@@ -255,9 +530,20 @@
     },
     { passive: false },
   );
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      if (e.ctrlKey) e.preventDefault();
+    },
+    { passive: false },
+  );
   function setTouch() {
     document.body.classList.add("touch");
   }
+  let padDig = { thr: 0, brk: 0, L: 0, R: 0, nit: 0, hop: 0 },
+    padAx = { thr: 0, brk: 0, lean: 0 },
+    padNavT = 0,
+    lastNitOn = 0;
   let reducedMotion = matchMedia("(prefers-reduced-motion:reduce)").matches;
   try {
     matchMedia("(prefers-reduced-motion:reduce)").addEventListener(
@@ -305,13 +591,59 @@
     );
     b.addEventListener("contextmenu", (e) => e.preventDefault());
   });
+  function pollPad() {
+    padDig.thr = padDig.brk = padDig.L = padDig.R = padDig.nit = padDig.hop = 0;
+    padAx.thr = padAx.brk = padAx.lean = 0;
+    let pads;
+    try {
+      pads = navigator.getGamepads ? navigator.getGamepads() : null;
+    } catch (e) {
+      return;
+    }
+    if (!pads) return;
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      if (!p) continue;
+      const b = p.buttons,
+        ax = p.axes;
+      const press = (n) => b[n] && (b[n].pressed || b[n].value > 0.5);
+      if (press(7) || press(0)) padDig.thr = 1;
+      if (press(6) || press(1)) padDig.brk = 1;
+      if (press(5) || press(2)) padDig.nit = 1;
+      if (press(4) || press(3)) padDig.hop = 1;
+      if (press(14) || (ax[0] || 0) < -0.45) padDig.L = 1;
+      if (press(15) || (ax[0] || 0) > 0.45) padDig.R = 1;
+      padAx.thr = Math.max(padAx.thr, b[7] ? b[7].value : 0);
+      padAx.brk = Math.max(padAx.brk, b[6] ? b[6].value : 0);
+      padAx.lean = clamp((ax[0] || 0) + (ax[2] || 0) * 0.35, -1, 1);
+      const now = performance.now();
+      if (now - padNavT > 220) {
+        if (press(9) || press(8)) {
+          padNavT = now;
+          if (state === "run") pause();
+          else if (state === "pause") resume();
+        } else if (press(0) && (state === "menu" || state === "over")) {
+          padNavT = now;
+          start();
+        }
+      }
+    }
+  }
   function readInput() {
+    pollPad();
     const t = state === "run";
-    inp.thr = t && (keys.thr || tch.G) ? 1 : 0;
-    inp.brk = t && (keys.brk || tch.B) ? 1 : 0;
-    inp.nit = t && (keys.nit || tch.N) ? 1 : 0;
-    inp.hop = t && (keys.hop || tch.H) ? 1 : 0;
-    inp.lean = t ? (keys.R || tch.R ? 1 : 0) - (keys.L || tch.L ? 1 : 0) : 0;
+    inp.thr = t && (keys.thr || tch.G || padDig.thr || padAx.thr > 0.15) ? 1 : 0;
+    inp.brk = t && (keys.brk || tch.B || padDig.brk || padAx.brk > 0.15) ? 1 : 0;
+    inp.nit = t && (keys.nit || tch.N || padDig.nit) ? 1 : 0;
+    inp.hop = t && (keys.hop || tch.H || padDig.hop) ? 1 : 0;
+    let lean = t ? (keys.R || tch.R || padDig.R ? 1 : 0) - (keys.L || tch.L || padDig.L ? 1 : 0) : 0;
+    if (t && Math.abs(padAx.lean) > 0.18) lean = padAx.lean;
+    inp.lean = lean;
+    if (inp.nit && !lastNitOn && sim && sim.nitro > 2) {
+      sfxNitro();
+      hap(12);
+    }
+    lastNitOn = inp.nit;
   }
   /* ---------- UI / menus ---------- */
   const box = $("box"),
@@ -334,8 +666,11 @@
   const bn = () => S.BIOMES[sim.bi].name;
   const HINT =
     '<p class="t kb"><b>W/&#8593;</b> gas &nbsp;<b>S/&#8595;</b> brake/reverse &nbsp;<b>A/D or &#8592;/&#8594;</b> tilt &nbsp;<b>SHIFT</b> nitro &nbsp;<b>SPACE</b> hop &nbsp;<b>ESC</b> pause &nbsp;<b>R</b> restart</p>';
+  let uiFrom = "menu";
   function menu() {
     state = "menu";
+    uiFrom = "menu";
+    const bb = biomeLine();
     show(
       '<h1>TORQUE OVERDRIVE</h1><p class="t">Endless procedural hill climb. Collect coins &amp; fuel, upgrade, go further.</p>' +
         HINT +
@@ -343,12 +678,27 @@
         Math.floor(save.best) +
         "m</b> &nbsp; Coins: <b>" +
         save.coins +
-        '</b></p><button class="btn" data-a="start">DRIVE</button><button class="btn g" data-a="garage">GARAGE</button>',
+        "</b>" +
+        (bb ? "<br>" + bb : "") +
+        '</p><button class="btn" data-a="start">DRIVE</button><button class="btn g" data-a="garage">GARAGE</button><button class="btn g" data-a="settings">SETTINGS</button><button class="btn g" data-a="stats">STATS</button>',
     );
+    if (!save.seenTut) {
+      tutorial();
+      return;
+    }
+  }
+  function biomeLine() {
+    const parts = [];
+    for (const b of S.BIOMES) {
+      const d = save.biomeBest[b.id];
+      if (d) parts.push(b.name.split(" ")[0] + " " + Math.floor(d) + "m");
+    }
+    return parts.length ? parts.join(" · ") : "";
   }
   function pause() {
-    if (state !== "run") return;
+    if (state !== "run" && state !== "pause" && state !== "settings") return;
     state = "pause";
+    uiFrom = "pause";
     show(
       '<h2>PAUSED</h2><p class="t">' +
         bn() +
@@ -356,34 +706,98 @@
         sim.seed +
         " &middot; " +
         Math.floor(sim.dist) +
-        'm</p><button class="btn" data-a="resume">RESUME</button><button class="btn g" data-a="garage">GARAGE / UPGRADES</button><button class="btn g" data-a="start">RESTART</button>',
+        'm</p><button class="btn" data-a="resume">RESUME</button><button class="btn g" data-a="garage">GARAGE / UPGRADES</button><button class="btn g" data-a="settings">SETTINGS</button><button class="btn g" data-a="start">RESTART</button>',
     );
   }
   function resume() {
+    if (state !== "pause" && state !== "settings") return;
     state = "run";
     hide();
     last = performance.now();
   }
   function start() {
     audio();
-    if (sim && !sim.banked && (state === "run" || state === "pause")) {
+    if (sim && !sim.banked && (state === "run" || state === "pause" || state === "settings")) {
       save.coins += sim.coins;
       sim.banked = 1;
       persist();
     }
-    newRun(params.has("seed") && !start.used ? +params.get("seed") : null);
+    const seedQ = params.has("seed") ? +params.get("seed") : NaN;
+    newRun(!start.used && isFinite(seedQ) ? seedQ >>> 0 : null);
     start.used = 1;
+    for (const q in keys) keys[q] = 0;
+    for (const q in tch) tch[q] = 0;
+    lastNitOn = 0;
+    acc = 0;
     state = "run";
     hide();
     last = performance.now();
     toast(bn().toUpperCase());
   }
+  function recordRun() {
+    const id = sim.biome.id;
+    const d = sim.dist,
+      c = sim.coins;
+    if (!(save.biomeBest[id] > d)) save.biomeBest[id] = d;
+    save.biomeCoins[id] = (save.biomeCoins[id] | 0) + c;
+    save.stats.runs = (save.stats.runs | 0) + 1;
+    save.stats.dist = (save.stats.dist || 0) + d;
+    save.stats.coins = (save.stats.coins | 0) + c;
+    if (sim.over === "out of fuel") save.stats.fuelouts = (save.stats.fuelouts | 0) + 1;
+    else save.stats.crashes = (save.stats.crashes | 0) + 1;
+    if (d >= 500) unlockAch("d500", "500m CLUB");
+    if (d >= 2000) unlockAch("d2k", "LONG HAUL");
+    if (save.stats.runs >= 10) unlockAch("r10", "REGULAR");
+    if (save.coins + c >= 500) unlockAch("rich", "COIN HOARDER");
+  }
+  function shareScore() {
+    const txt =
+      "TORQUE OVERDRIVE — " +
+      Math.floor(sim.dist) +
+      "m on " +
+      bn() +
+      " (seed " +
+      sim.seed +
+      ")";
+    const url = location.href.split("?")[0] + "?seed=" + sim.seed;
+    if (navigator.share) {
+      navigator.share({ title: "Torque Overdrive", text: txt, url }).catch(() => copyScore(txt + " " + url));
+    } else copyScore(txt + " " + url);
+  }
+  function copyScore(s) {
+    const done = () => toast("COPIED");
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(s).then(done).catch(() => fallbackCopy(s));
+    else fallbackCopy(s);
+  }
+  function fallbackCopy(s) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      toast("COPIED");
+    } catch (e) {
+      toast(s);
+    }
+  }
   function endRun() {
+    if (state === "over") return;
     state = "over";
-    save.coins += sim.coins;
-    const nb = sim.dist > save.best;
-    if (nb) save.best = sim.dist;
-    persist();
+    uiFrom = "over";
+    if (!sim.banked) {
+      recordRun();
+      save.coins += sim.coins;
+      const nb = sim.dist > save.best;
+      if (nb) save.best = sim.dist;
+      persist();
+      sim.banked = 1;
+      showOver(nb);
+    } else showOver(false);
+  }
+  function showOver(nb) {
     show(
       '<h1 style="font-size:clamp(22px,5vw,40px)">' +
         (sim.over === "out of fuel" ? "OUT OF FUEL" : "CRASHED") +
@@ -399,16 +813,17 @@
         bn() +
         " &middot; seed " +
         sim.seed +
-        '</p><button class="btn" data-a="start">RETRY</button><button class="btn g" data-a="garage">GARAGE</button>',
+        " &middot; best here <b>" +
+        Math.floor(save.biomeBest[sim.biome.id] || sim.dist) +
+        "m</b></p><button class=\"btn\" data-a=\"start\">RETRY</button><button class=\"btn g\" data-a=\"garage\">GARAGE</button><button class=\"btn g\" data-a=\"share\">SHARE</button><button class=\"btn g\" data-a=\"settings\">SETTINGS</button>",
     );
-    sim.banked = 1;
   }
   function garage(from) {
     const v = save.veh,
       d = S.VEHICLES[v],
       u = save.up[v],
       owned = save.own[v],
-      mid = state === "pause";
+      mid = garage.from === "pause" || state === "pause";
     garage.from = garage.from || state;
     if (from) garage.from = from;
     const bar = (x, m) =>
@@ -484,6 +899,139 @@
     }
     save.coins -= c;
   }
+  function goBack(from) {
+    from === "pause"
+      ? ((state = "pause"), pause())
+      : from === "over"
+        ? ((state = "over"), showOver(false))
+        : menu();
+  }
+  function togCls(on) {
+    return 'class="tog' + (on ? " on" : "") + '"';
+  }
+  function settings() {
+    uiFrom = state === "settings" ? uiFrom : state;
+    state = "settings";
+    const src = save.binds && Object.keys(save.binds).length ? save.binds : DEF_BINDS;
+    const btxt = (a) => (src[a] && src[a][0]) || DEF_BINDS[a][0];
+    show(
+      '<h2>SETTINGS</h2>' +
+        '<div class="setrow"><label>Master</label><input type="range" min="0" max="100" value="' +
+        save.volM +
+        '" data-v="volM" aria-label="Master volume"></div>' +
+        '<div class="setrow"><label>SFX</label><input type="range" min="0" max="100" value="' +
+        save.volS +
+        '" data-v="volS" aria-label="SFX volume"></div>' +
+        '<div class="setrow"><label>Music</label><input type="range" min="0" max="100" value="' +
+        save.volMus +
+        '" data-v="volMus" aria-label="Music volume"></div>' +
+        '<div class="setrow"><label>Mute</label><button type="button" ' +
+        togCls(save.mute) +
+        ' data-a="mute" aria-pressed="' +
+        !!save.mute +
+        '"></button></div>' +
+        '<div class="setrow"><label>Quality</label><select data-v="qmode" aria-label="Quality"><option value="0"' +
+        (save.qmode === 0 ? " selected" : "") +
+        '>Low</option><option value="1"' +
+        (save.qmode === 1 ? " selected" : "") +
+        '>Med</option><option value="2"' +
+        (save.qmode === 2 ? " selected" : "") +
+        ">High</option></select></div>" +
+        '<div class="setrow"><label>Reduced motion</label><button type="button" ' +
+        togCls(save.rm) +
+        ' data-a="rm"></button></div>' +
+        '<div class="setrow"><label>Haptics</label><button type="button" ' +
+        togCls(save.hap) +
+        ' data-a="hap"></button></div>' +
+        '<div class="setrow"><label>Show FPS</label><button type="button" ' +
+        togCls(save.fps) +
+        ' data-a="fps"></button></div>' +
+        '<div class="setrow"><label>Controls</label><select data-v="layout" aria-label="Control layout"><option value="right"' +
+        (save.layout === "right" ? " selected" : "") +
+        '>Throttle right</option><option value="left"' +
+        (save.layout === "left" ? " selected" : "") +
+        ">Throttle left</option></select></div>" +
+        '<div class="setrow"><label>Button size</label><select data-v="ctrlSize" aria-label="Control size"><option value="sm"' +
+        (save.ctrlSize === "sm" ? " selected" : "") +
+        '>Small</option><option value="md"' +
+        (save.ctrlSize === "md" ? " selected" : "") +
+        '>Medium</option><option value="lg"' +
+        (save.ctrlSize === "lg" ? " selected" : "") +
+        ">Large</option></select></div>" +
+        '<div class="setrow"><label>Gas</label><button class="bind btn sm g" data-a="bind-thr">' +
+        btxt("thr") +
+        "</button></div>" +
+        '<div class="setrow"><label>Brake</label><button class="bind btn sm g" data-a="bind-brk">' +
+        btxt("brk") +
+        "</button></div>" +
+        '<div class="setrow"><label>Nitro</label><button class="bind btn sm g" data-a="bind-nit">' +
+        btxt("nit") +
+        "</button></div>" +
+        '<div class="setrow"><label>Hop</label><button class="bind btn sm g" data-a="bind-hop">' +
+        btxt("hop") +
+        '</button></div><button class="btn" data-a="sback">BACK</button>',
+    );
+  }
+  function settingsBack() {
+    const f = uiFrom;
+    applyChrome();
+    applyQual();
+    persist();
+    if (f === "pause") {
+      state = "pause";
+      pause();
+    } else if (f === "over") {
+      state = "over";
+      showOver(false);
+    } else menu();
+  }
+  function stats() {
+    uiFrom = state === "stats" ? uiFrom : state;
+    state = "stats";
+    const st = save.stats;
+    let bio = "";
+    for (const b of S.BIOMES) {
+      const d = save.biomeBest[b.id] || 0,
+        c = save.biomeCoins[b.id] || 0;
+      bio +=
+        "<div class=\"row\"><div class=\"n\">" +
+        b.name +
+        "<small>Best " +
+        Math.floor(d) +
+        "m · coins " +
+        c +
+        "</small></div></div>";
+    }
+    const achs = Object.keys(save.ach);
+    show(
+      "<h2>STATS</h2><p class=\"t\">Runs <b>" +
+        (st.runs | 0) +
+        "</b> · Distance <b>" +
+        Math.floor(st.dist || 0) +
+        "m</b> · Coins earned <b>" +
+        (st.coins | 0) +
+        "</b><br>Flips <b>" +
+        (st.flips | 0) +
+        "</b> · Crashes <b>" +
+        (st.crashes | 0) +
+        "</b> · Fuel-outs <b>" +
+        (st.fuelouts | 0) +
+        "</b></p>" +
+        bio +
+        "<p class=\"t\">Achievements: <b>" +
+        (achs.length ? achs.join(", ") : "none yet") +
+        '</b></p><button class="btn" data-a="sback">BACK</button>',
+    );
+  }
+  function tutorial() {
+    save.seenTut = 1;
+    persist();
+    show(
+      '<h2>HOW TO RIDE</h2><p class="t">Hold <b>GAS</b> to climb. <b>BRAKE</b> to reverse. <b>TILT</b> in air. <b>NITRO</b> dumps extra torque. Hold <b>HOP</b> to preload, release to bunny-hop. Grab fuel every ~2 km or you stall. Coins buy garage upgrades.</p>' +
+        HINT +
+        '<button class="btn" data-a="tutok">GOT IT</button>',
+    );
+  }
   box.addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b || b.disabled) return;
@@ -497,11 +1045,34 @@
     } else if (a === "gback") {
       const f = garage.from;
       garage.from = null;
-      f === "pause"
-        ? ((state = "run"), pause())
-        : f === "over"
-          ? endScreen()
-          : menu();
+      goBack(f);
+    } else if (a === "settings") settings();
+    else if (a === "stats") stats();
+    else if (a === "sback") settingsBack();
+    else if (a === "share") shareScore();
+    else if (a === "tutok") menu();
+    else if (a === "mute") {
+      save.mute = save.mute ? 0 : 1;
+      persist();
+      applyVol();
+      syncMute();
+      settings();
+    } else if (a === "rm") {
+      save.rm = save.rm ? 0 : 1;
+      persist();
+      settings();
+    } else if (a === "hap") {
+      save.hap = save.hap ? 0 : 1;
+      persist();
+      settings();
+    } else if (a === "fps") {
+      save.fps = save.fps ? 0 : 1;
+      applyChrome();
+      persist();
+      settings();
+    } else if (a && a.startsWith("bind-")) {
+      waitBind = a.slice(5);
+      b.textContent = "press key…";
     } else if (a === "pv" || a === "nv") {
       save.veh = (save.veh + (a === "nv" ? 1 : 2)) % 3;
       persist();
@@ -514,7 +1085,7 @@
         persist();
         garage();
       }
-    } else if (a.startsWith("up")) {
+    } else if (a && a.startsWith("up")) {
       const i = +a[2],
         u = save.up[save.veh],
         c = cost(u[i]);
@@ -532,20 +1103,22 @@
       }
     }
   });
-  function endScreen() {
-    state = "over";
-    endRun.replay = 1;
-    const s = sim;
-    show(
-      '<h1 style="font-size:clamp(22px,5vw,40px)">' +
-        (s.over === "out of fuel" ? "OUT OF FUEL" : "CRASHED") +
-        '</h1><p class="t">Distance <b>' +
-        Math.floor(s.dist) +
-        "m</b> &middot; wallet <b>" +
-        save.coins +
-        '</b></p><button class="btn" data-a="start">RETRY</button><button class="btn g" data-a="garage">GARAGE</button>',
-    );
-  }
+  box.addEventListener("input", (e) => {
+    const el = e.target,
+      v = el.dataset.v;
+    if (!v) return;
+    if (el.tagName === "SELECT") {
+      if (v === "qmode") save.qmode = +el.value;
+      else save[v] = el.value;
+      applyChrome();
+      applyQual();
+      persist();
+    } else if (el.type === "range") {
+      save[v] = +el.value;
+      applyVol();
+      persist();
+    }
+  });
   $("pb").onclick = () => {
     audio();
     state === "run" ? pause() : state === "pause" && resume();
@@ -558,28 +1131,97 @@
     save.mute = save.mute ? 0 : 1;
     persist();
     syncMute();
+    applyVol();
     if (!save.mute) audio();
   };
   syncMute();
+  $("sb").onclick = () => {
+    audio();
+    if (state === "run") pause();
+    settings();
+  };
+  function toggleFs() {
+    const el = document.documentElement;
+    try {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      } else (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } catch (e) {}
+  }
+  $("fs").onclick = () => {
+    audio();
+    toggleFs();
+  };
+  const oriEl = $("ori"),
+    oriOk = $("oriok");
+  function checkOri() {
+    if (!oriEl) return;
+    const tall = innerHeight > innerWidth * 1.15 && innerWidth < 820;
+    if (tall && !checkOri.dismissed) oriEl.classList.add("on");
+    else oriEl.classList.remove("on");
+  }
+  if (oriOk)
+    oriOk.onclick = () => {
+      checkOri.dismissed = 1;
+      oriEl.classList.remove("on");
+    };
+  addEventListener("orientationchange", () => setTimeout(checkOri, 250));
+  checkOri();
+  const QMUL = [0.55, 0.82, 1];
+  function applyQual() {
+    const base = QMUL[save.qmode] || 0.82;
+    qual = Math.min(qual, 1);
+    if (save.qmode === 2) qual = Math.max(qual, 0.9);
+    else if (save.qmode === 0) qual = Math.min(qual, 0.55);
+    else qual = Math.min(Math.max(qual, 0.7), 0.9);
+    qual = Math.min(qual, base + 0.15);
+    if (save.qmode === 0) qual = 0.55;
+    if (save.qmode === 2 && ema < 20) qual = 1;
+    resize();
+  }
   /* ---------- background ---------- */
   let sky = null,
     stars = [];
+  const clouds = [];
   function buildBg() {
     const b = sim.biome;
-    sky = ctx.createLinearGradient(0, 0, 0, H * DPR);
-    sky.addColorStop(0, b.sky[0]);
-    sky.addColorStop(1, b.sky[1]);
+    const tod = ((sim.seed >>> 8) % 100) / 100;
+    const night = b.stars || tod > 0.78 || tod < 0.12;
+    const dusk = !night && (tod > 0.62 || tod < 0.22);
+    sky = ctx.createLinearGradient(0, 0, 0, H);
+    if (night) {
+      sky.addColorStop(0, b.stars ? b.sky[0] : "#0b1220");
+      sky.addColorStop(1, b.stars ? b.sky[1] : "#1e293b");
+    } else if (dusk) {
+      sky.addColorStop(0, "#f97316");
+      sky.addColorStop(0.45, b.sky[0]);
+      sky.addColorStop(1, b.sky[1]);
+    } else {
+      sky.addColorStop(0, b.sky[0]);
+      sky.addColorStop(1, b.sky[1]);
+    }
+    sim._tod = { night, dusk, rain: b.id === "mud" || ((sim.seed >>> 3) % 7) === 0 && b.id === "hills", snow: b.id === "arctic" };
     stars = [];
-    if (b.stars)
-      for (let i = 0; i < 70; i++)
+    if (b.stars || night)
+      for (let i = 0; i < 90; i++)
         stars.push([
           Math.random(),
           Math.random() * 0.7,
           Math.random() * 1.5 + 0.5,
         ]);
+    clouds.length = 0;
+    if (!night && !b.stars)
+      for (let i = 0; i < 6; i++)
+        clouds.push({
+          x: Math.random(),
+          y: 0.08 + Math.random() * 0.28,
+          s: 0.4 + Math.random() * 0.8,
+          p: 0.03 + Math.random() * 0.05,
+        });
   }
   function resize() {
-    DPR = Math.min(window.devicePixelRatio || 1, 2) * qual;
+    const cap = save.qmode === 2 ? 2 : save.qmode === 0 ? 1.15 : 1.6;
+    DPR = Math.min(window.devicePixelRatio || 1, cap) * Math.min(qual, 1);
     const w = cv.clientWidth || innerWidth,
       h = cv.clientHeight || innerHeight;
     W = w;
@@ -798,7 +1440,7 @@
     cam.y += (fy - 20 - cam.y) * (1 - Math.exp(-dt * 4));
     const S0 = Math.min(H / 500, W / 640) * cam.z;
     k = S0;
-    const rm = reducedMotion;
+    const rm = reducedMotion || !!save.rm;
     let sx = 0,
       sy = 0;
     const sh = (sim.nitOn ? 3 : 0) + shake;
@@ -818,8 +1460,19 @@
     ctx.beginPath();
     ctx.arc(W * 0.8, H * 0.2, Math.min(W, H) * 0.06, 0, TAU);
     ctx.fill();
-    hills(1, 0.05, H * 0.08, b.far[0], 0.62, 0.3);
-    hills(3, 0.12, H * 0.07, b.far[1], 0.72, 0.5);
+    if (clouds.length && qual > 0.6) {
+      ctx.fillStyle = sim._tod && sim._tod.dusk ? "rgba(255,220,180,.18)" : "rgba(255,255,255,.16)";
+      for (const c of clouds) {
+        const cx = ((c.x * W + cam.x * c.p) % (W + 160)) - 80;
+        ctx.beginPath();
+        ctx.ellipse(cx, c.y * H, 48 * c.s, 16 * c.s, 0, 0, TAU);
+        ctx.ellipse(cx + 28 * c.s, c.y * H + 4, 36 * c.s, 14 * c.s, 0, 0, TAU);
+        ctx.fill();
+      }
+    }
+    hills(1, 0.04, H * 0.09, b.far[0], 0.58, 0.22);
+    hills(2.2, 0.08, H * 0.08, b.far[0], 0.64, 0.35);
+    hills(3, 0.14, H * 0.07, b.far[1], 0.74, 0.5);
     /* world */
     const ax = W * 0.36,
       ay = H * 0.58;
@@ -911,6 +1564,21 @@
         s = Math.sin(-ca);
       wl.push([wx * c - wy * s, wx * s + wy * c]);
     }
+    if (qual > 0.5) {
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = "#000";
+      for (let i = 0; i < 2; i++) {
+        const w = sim.wh[i],
+          wx = w.px + (w.x - w.px) * al,
+          wy = w.py + (w.y - w.py) * al,
+          gy = T.y(wx);
+        ctx.beginPath();
+        ctx.ellipse(wx, gy + 2, R * 1.15, R * 0.32, 0, 0, TAU);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
     wheelDraw(sim.wh[0], R, al);
     ctx.save();
     ctx.translate(cx, cy);
@@ -943,6 +1611,88 @@
       ctx.fillRect(p.x - p.s / 2, p.y - p.s / 2, p.s, p.s);
     }
     ctx.globalAlpha = 1;
+    const spd = Math.hypot(sim.vx, sim.vy);
+    const wdt = state === "run" ? dt : 0;
+    let wTgt = 0;
+    if (!rm && qual > 0.55) {
+      let t = clamp((spd - 180) / 720, 0, 1);
+      t = t * t * (3 - 2 * t);
+      if (sim.nitOn) t = t + (1 - t) * 0.45;
+      if (sim.air > 0.25 && sim.vy > 30) t = t + (1 - t) * 0.28;
+      wTgt = t;
+    }
+    if (wdt) {
+      windI += (wTgt - windI) * Math.min(1, wdt * 4.2);
+      if (windI < 0.008 && wTgt <= 0) windI = 0;
+    }
+    if (windI > 0 && !rm && qual > 0.55) {
+      const ax0 = cam.x - ax / k,
+        ay0 = cam.y - ay / k,
+        vw = W / k,
+        vh = H / k,
+        x0 = ax0 - 40,
+        y0 = ay0 - 40,
+        x1 = ax0 + vw + 40,
+        y1 = ay0 + vh + 40;
+      const inv = spd > 1 ? 1 / spd : 0,
+        nx = sim.vx * inv,
+        ny = sim.vy * inv;
+      const nW = Math.max(10, (NW * clamp(qual, 0.55, 1) + 0.5) | 0);
+      if (!windOn) {
+        for (let i = 0; i < nW; i++) windPlace(i, ax0, ay0, vw, vh, nx, ny, 0);
+        windOn = 1;
+      }
+      windT += wdt;
+      ctx.strokeStyle = "#fff";
+      ctx.lineCap = "round";
+      for (let i = 0; i < nW; i++) {
+        if (wdt) {
+          wX[i] -= sim.vx * wdt * wZ[i] * 0.9;
+          wY[i] -= sim.vy * wdt * wZ[i] * 0.9;
+        }
+        if (wX[i] < x0 || wX[i] > x1 || wY[i] < y0 || wY[i] > y1)
+          windPlace(i, ax0, ay0, vw, vh, nx, ny, 1);
+        const wob = Math.sin(windT * 7 + wPh[i]) * 3,
+          px = -ny,
+          py = nx,
+          hx = wX[i] + px * wob,
+          hy = wY[i] + py * wob,
+          len = wL[i],
+          tx = hx + nx * len,
+          ty = hy + ny * len,
+          mx = (hx + tx) * 0.5,
+          my = (hy + ty) * 0.5,
+          a = windI * wA[i];
+        ctx.lineWidth = wTh[i];
+        ctx.globalAlpha = a * 0.28;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(mx, my);
+        ctx.stroke();
+        ctx.globalAlpha = a;
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(hx, hy);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const tw = sim._tod;
+    if (tw && (tw.rain || tw.snow) && qual > 0.55 && !rm) {
+      ctx.strokeStyle = tw.snow ? "rgba(255,255,255,.55)" : "rgba(180,210,255,.35)";
+      ctx.lineWidth = tw.snow ? 1.6 : 1;
+      ctx.beginPath();
+      const n = tw.snow ? 40 : 55;
+      wxT += wdt;
+      const tnow = wxT * (tw.snow ? 40 : 180);
+      for (let i = 0; i < n; i++) {
+        const rx = cam.x + ((i * 97 + tnow) % (W / k + 80)) - 40,
+          ry = cam.y - 80 + ((i * 53 + tnow * (tw.snow ? 0.6 : 2.2)) % (H / k + 120));
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx + (tw.snow ? 1 : 4), ry + (tw.snow ? 3 : 10));
+      }
+      ctx.stroke();
+    }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
   /* ---------- HUD ---------- */
@@ -963,13 +1713,13 @@
     const fw = Math.round(f * 100) + "%";
     if (hc.fw !== fw) {
       hc.fw = fw;
-      H_.f.firstElementChild.style.width = fw;
+      H_.f.firstElementChild.style.transform = "scaleX(" + f + ")";
       H_.f.classList.toggle("low", f < 0.25);
     }
     const nw = Math.round(sim.nitro) + "%";
     if (hc.nw !== nw) {
       hc.nw = nw;
-      H_.n.firstElementChild.style.width = nw;
+      H_.n.firstElementChild.style.transform = "scaleX(" + sim.nitro / 100 + ")";
     }
     H_.n.classList.toggle("hot", !!sim.nitOn);
   }
@@ -1047,20 +1797,37 @@
         /* frozen */
       }
     }
-    /* adaptive quality: keep frame time under budget on slow devices */
     const ft = now - (frame.p || now);
     frame.p = now;
     if (ft > 0 && ft < 200) ema += (ft - ema) * 0.05;
-    if (ema > 24 && qual > 0.55 && ++slow > 90) {
-      qual = Math.max(0.55, qual * 0.8);
+    const qMin = save.qmode === 0 ? 0.55 : save.qmode === 2 ? 0.75 : 0.55;
+    if (save.qmode !== 2 && ema > 24 && qual > qMin && ++slow > 90) {
+      qual = Math.max(qMin, qual * 0.8);
       slow = 0;
       ema = 16;
       resize();
     } else if (ema <= 24) slow = 0;
+    if (save.fps) {
+      const fpsEl = $("fps");
+      if (fpsEl && now - (hud.ft || 0) > 400) {
+        hud.ft = now;
+        fpsEl.textContent = Math.round(1000 / Math.max(ema, 1)) + " fps";
+      }
+    }
     frame.cost = performance.now() - t0;
     frame.ema = ema;
   }
-  resize();
+  if ("serviceWorker" in navigator) {
+    addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+    let hadSW = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (hadSW) toast("Update ready – reload");
+      hadSW = true;
+    });
+  }
+  applyQual();
   newRun(params.has("seed") ? +params.get("seed") : null);
   menu();
   last = performance.now();
@@ -1071,6 +1838,12 @@
     },
     get state() {
       return state;
+    },
+    get save() {
+      return save;
+    },
+    get wind() {
+      return { x: wX, y: wY, i: windI, n: NW, L: wL };
     },
     frame,
     S,
